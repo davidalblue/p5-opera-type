@@ -4,10 +4,50 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>p5-sketch</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" rel="stylesheet" />
+    <title>Opera Type</title>
   </head>
   <body>
-    <div id="app"></div>
+    <main class="app">
+      <div class="stage" id="stage"></div>
+
+      <aside class="panel">
+        <div class="logo" id="logo" role="img" aria-label="Opera"></div>
+
+        <section>
+          <h2>Baseline</h2>
+          <div class="grid cols-2">
+            <button class="tile" data-baseline="bottom">Bottom</button>
+            <button class="tile" data-baseline="top">Top</button>
+          </div>
+        </section>
+
+        <section>
+          <h2>Modulate Height</h2>
+          <div class="grid cols-3" id="height-modes"></div>
+          <div class="sliders" id="height-sliders"></div>
+        </section>
+
+        <section>
+          <h2>Modulate Italic</h2>
+          <div class="grid cols-4" id="italic-modes"></div>
+          <div class="sliders" id="italic-sliders"></div>
+        </section>
+
+        <section>
+          <h2>Quick Actions</h2>
+          <div class="grid">
+            <button class="tile" id="randomize-all">Randomize Everything</button>
+            <button class="tile" id="randomize-height">Randomize Height</button>
+            <button class="tile" id="reset">Reset Selection</button>
+          </div>
+        </section>
+
+        <footer class="hint">Type to edit · ⌘S to save PNG</footer>
+      </aside>
+    </main>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
