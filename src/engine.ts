@@ -13,34 +13,50 @@ interface Segment {
   c1: Pt // control points; unused for lines
   c2: Pt
   to: Pt
-  // When a curve continues a straight line, the y at that line's far end. The curve's handle is
-  // then stretched exactly like the line, so the join stays smooth.
-  lineIn?: number
-  lineOut?: number
+  // When a curve continues a straight line, that line's far end. The curve's handle is then
+  // stretched exactly like the line, so the join stays smooth.
+  lineIn?: Pt
+  lineOut?: Pt
 }
+
+type XY = [number, number]
 
 interface Contour {
   start: Pt
   segs: Segment[]
 }
 
-export interface Glyph {
-  contours: Contour[]
-  advance: number
-  // Horizontal bands the glyph is sliced into. Thin bands hold horizontal strokes
-  // (serifs, crossbars, the top and bottom of bowls) and are "locked": they keep their
-  // weight while the glyph stretches, so only the stems and bowls get taller.
+/**
+ * A glyph sliced into horizontal bands at its horizontal stroke edges. Thin bands are strokes
+ * (crossbars, serifs, the tops and bottoms of bowls) and are "locked": they keep their thickness.
+ * Only the open bands in between stretch.
+ */
+interface Bands {
   breaks: number[]
   locked: boolean[]
   // Per band: how far (font units) the stretch takes to ease in from each edge, so curves
-  // crossing from a locked band into a stretching one bend smoothly instead of kinking
+  // crossing from a stroke into an open band bend smoothly instead of kinking
   ramps: [number, number][]
+  // The span that's stretched to its target size: baseline to cap height
+  lo: number
+  hi: number
 }
 
-/** How much a glyph grows: sy scales the cap height, sx the width (and the weight of horizontal strokes). */
+export interface Glyph {
+  contours: Contour[]
+  advance: number
+  bands: Bands
+}
+
+/**
+ * How much a glyph grows: sy scales its cap height and sx its width. Horizontal strokes don't
+ * follow: they get w times thicker (1 keeps the font's own thickness). Vertical strokes are kept
+ * in check by drawing the glyph from a lighter weight (see TypeEngine.weightFor).
+ */
 export interface Stretch {
   sx: number
   sy: number
+  w: number
 }
 
 /** Where a glyph lands on screen, in pixels. */
@@ -59,8 +75,11 @@ export interface Rows {
   count: number
 }
 
-// Bands thinner than this share of the cap height count as horizontal strokes
-const LOCK_THRESHOLD = 0.12
+// A band counts as a stroke when it's thinner than this many times the font's own stem
+// (vertical) or crossbar (horizontal) thickness at the current weight…
+const STROKE_FACTOR = 1.5
+// …or, for horizontal strokes, thinner than this share of the cap height
+const MIN_STROKE = 0.12
 // Distance over which the stretch eases in at the edge of a stretching band, as a share of the cap height.
 // Long enough that stretched bowls (O, P, D…) stay oval; shorter values give them boxy shoulders.
 const EASE_IN = 0.25
@@ -91,6 +110,8 @@ interface Point {
 export class TypeEngine {
   readonly capHeight: number
   private cache = new Map<string, Glyph>()
+  private strokes = new Map<string, { stem: number; bar: number }>()
+  private stems: { weight: number; stem: number }[] | null = null
   private font: Font
   private axes: Record<string, Axis>
   private pinned: AxisValues
@@ -158,6 +179,40 @@ export class TypeEngine {
     return g
   }
 
+  /**
+   * The weight whose stems are `ratio` times as thick as those at `weight` — how condensed and
+   * extended styles keep their colour. A letter stretched sx times wider is drawn from
+   * weightFor(weight, 1 / sx), so after stretching its stems are as thick as the font's own.
+   * Clamped to the weight axis; fonts without one just get `weight` back.
+   */
+  weightFor(weight: number, ratio: number) {
+    const range = this.weightRange
+    if (!range || Math.abs(ratio - 1) < 1e-3) return weight
+    // stem thickness across the weight axis, measured once
+    this.stems ??= Array.from({ length: 33 }, (_, i) => {
+      const w = range[0] + ((range[1] - range[0]) * i) / 32
+      return { weight: w, stem: this.strokeSizes(this.coords(w, 0)).stem }
+    })
+    const curve = this.stems
+    const at = (w: number) => {
+      const i = Math.min(curve.length - 2, Math.max(0, Math.floor(((w - range[0]) / (range[1] - range[0])) * 32)))
+      const a = curve[i]
+      const b = curve[i + 1]
+      return a.stem + ((b.stem - a.stem) * (w - a.weight)) / (b.weight - a.weight)
+    }
+    const target = at(Math.min(range[1], Math.max(range[0], weight))) * ratio
+    if (target <= curve[0].stem) return range[0]
+    if (target >= curve[curve.length - 1].stem) return range[1]
+    for (let i = 0; i < curve.length - 1; i++) {
+      const a = curve[i]
+      const b = curve[i + 1]
+      if (target >= a.stem && target <= b.stem) {
+        return b.stem === a.stem ? a.weight : a.weight + ((b.weight - a.weight) * (target - a.stem)) / (b.stem - a.stem)
+      }
+    }
+    return weight
+  }
+
   has(ch: string) {
     return ch === ' ' || this.font.charToGlyph(ch).index > 0
   }
@@ -182,7 +237,8 @@ export class TypeEngine {
     return c
   }
 
-  private analyze(ch: string, coords: AxisValues | null): Glyph {
+  /** Outline of `ch` at the axis values, as contours with y up and any native slant removed. */
+  private outline(ch: string, coords: AxisValues | null) {
     const glyph = this.font.charToGlyph(ch)
     const upm = this.font.unitsPerEm
     const path = coords
@@ -190,149 +246,88 @@ export class TypeEngine {
       : glyph.getPath(0, 0, upm)
     const contours = toContours(path.commands)
     if (coords?.slnt) unshear(contours, Math.tan((Math.abs(coords.slnt) * Math.PI) / 180))
+    return { glyph, contours }
+  }
+
+  /**
+   * The font's stem and crossbar thickness at these axis values, measured across the middle of
+   * "I" and "H". Used to tell strokes (keep their thickness) from open space (stretches).
+   */
+  private strokeSizes(coords: AxisValues | null) {
+    const key = coords ? `${coords.wght ?? ''}|${coords.slnt ?? ''}` : ''
+    let sizes = this.strokes.get(key)
+    if (!sizes) {
+      const C = this.capHeight
+      const run = (ch: string, axis: 'x' | 'y', at: number) => {
+        if (!this.has(ch)) return 0
+        const hits = crossings(this.outline(ch, coords).contours, axis, at)
+        return hits.length >= 2 ? hits[1] - hits[0] : 0
+      }
+      const h = this.outline('H', coords).contours
+      const xs = h.flatMap((c) => [c.start.x, ...c.segs.map((s) => s.to.x)])
+      const mid = (Math.min(...xs) + Math.max(...xs)) / 2
+      sizes = { stem: run('I', 'y', C / 2) || 0.1 * C, bar: run('H', 'x', mid) || 0.05 * C }
+      this.strokes.set(key, sizes)
+    }
+    return sizes
+  }
+
+  private analyze(ch: string, coords: AxisValues | null): Glyph {
+    const { glyph, contours } = this.outline(ch, coords)
     const advance = coords ? this.variedAdvance(glyph, coords) : (glyph.advanceWidth ?? 0)
     const C = this.capHeight
+    const { bar } = this.strokeSizes(coords)
 
-    // y positions of horizontal edges: flat lines, and curves leaving or arriving horizontally
-    const edges: number[] = []
+    // Horizontal stroke edges: flat lines, and curves leaving or arriving horizontally
+    // (the tops and bottoms of bowls)
+    const yEdges: number[] = []
     let minY = 0
     let maxY = C
     for (const { start, segs } of contours) {
       let p = start
       for (const seg of segs) {
         const { to } = seg
+        const dx = Math.abs(to.x - p.x)
         if (seg.line) {
-          const dx = Math.abs(to.x - p.x)
-          if (dx > 4 && Math.abs(to.y - p.y) <= 0.1 * dx) edges.push((to.y + p.y) / 2)
+          if (dx > 4 && Math.abs(to.y - p.y) <= 0.1 * dx) yEdges.push((to.y + p.y) / 2)
         } else {
-          if (Math.abs(seg.c1.x - p.x) > 1 && Math.abs(seg.c1.y - p.y) < 1.5) edges.push(p.y)
-          if (Math.abs(seg.c2.x - to.x) > 1 && Math.abs(seg.c2.y - to.y) < 1.5) edges.push(to.y)
+          if (Math.abs(seg.c1.x - p.x) > 1 && Math.abs(seg.c1.y - p.y) < 1.5) yEdges.push(p.y)
+          if (Math.abs(seg.c2.x - to.x) > 1 && Math.abs(seg.c2.y - to.y) < 1.5) yEdges.push(to.y)
         }
-        minY = Math.min(minY, to.y)
-        maxY = Math.max(maxY, to.y)
+        for (const q of seg.line ? [to] : [seg.c1, seg.c2, to]) {
+          minY = Math.min(minY, q.y)
+          maxY = Math.max(maxY, q.y)
+        }
         p = to
       }
     }
-    edges.push(minY, maxY)
+    yEdges.push(minY, maxY)
 
     // 0 and the cap height are always breaks, so the baseline and cap line map exactly
-    const breaks = [0, C]
-    for (const y of edges.sort((a, b) => a - b)) {
-      if (breaks.every((b) => Math.abs(b - y) > 2)) breaks.push(y)
-    }
-    breaks.sort((a, b) => a - b)
-    const locked = breaks.slice(1).map((b, i) => b - breaks[i] < LOCK_THRESHOLD * C)
-
-    // Bands that stretch: between baseline and cap height and not locked. Their stretch eases in
-    // from the edges that border a non-stretching band.
-    const stretches = (i: number) => i >= 0 && i < locked.length && breaks[i] >= 0 && breaks[i + 1] <= C && !locked[i]
-    const ramps = locked.map((_, i): [number, number] => {
-      if (!stretches(i)) return [0, 0]
-      const w = Math.min(EASE_IN * C, (breaks[i + 1] - breaks[i]) / 2)
-      return [stretches(i - 1) ? 0 : w, stretches(i + 1) ? 0 : w]
-    })
+    const bands = makeBands(yEdges, 0, C, Math.max(MIN_STROKE * C, STROKE_FACTOR * bar), C)
 
     // Split curves wherever the stretch changes character, so every piece maps cleanly
-    const levels = new Set(breaks)
-    ramps.forEach(([l, r], i) => {
-      if (l) [breaks[i] + l / 2, breaks[i] + l].forEach((y) => levels.add(y))
-      if (r) [breaks[i + 1] - r, breaks[i + 1] - r / 2].forEach((y) => levels.add(y))
-    })
-    for (const contour of contours) contour.segs = contour.segs.flatMap((seg, i) => splitAtLevels(seg, i ? contour.segs[i - 1].to : contour.start, [...levels]))
+    const levels = levelsOf(bands)
+    for (const contour of contours) {
+      contour.segs = contour.segs.flatMap((seg, i) => splitAtLevels(seg, i ? contour.segs[i - 1].to : contour.start, levels))
+    }
     markLineJoins(contours)
 
-    return { contours, advance, breaks, locked, ramps }
+    return { contours, advance, bands }
   }
 
-  /**
-   * Vertical remap for a stretched glyph: locked bands grow like the width (sx), stretching bands
-   * absorb the rest so the cap height becomes C·sy. Anything outside baseline–cap height
-   * (overshoots, descenders) grows like the width too. The growth rate eases in over each
-   * stretching band's ramps, which keeps the remap smooth (no sudden change of rate).
-   */
-  private yMap(g: Glyph, { sx, sy }: Stretch) {
-    const { breaks, locked, ramps } = g
-    const C = this.capHeight
-    const stretches = (i: number) => breaks[i] >= 0 && breaks[i + 1] <= C && !locked[i]
-    let fixedLen = 0 // grows at sx: locked bands plus half of every ramp
-    let freeLen = 0 // grows at k
-    for (let i = 0; i < locked.length; i++) {
-      if (breaks[i] < 0 || breaks[i + 1] > C) continue
-      const len = breaks[i + 1] - breaks[i]
-      if (!stretches(i)) fixedLen += len
-      else {
-        const half = (ramps[i][0] + ramps[i][1]) / 2
-        fixedLen += half
-        freeLen += len - half
-      }
-    }
-    if (freeLen < 1) return { f: (y: number) => y * sy, slope: () => sy }
-    const k = (C * sy - sx * fixedLen) / freeLen
-
-    // growth rate d units into band i, and its integral
-    const rate = (i: number, d: number) => {
-      if (i < 0 || i >= locked.length || !stretches(i)) return sx
-      const [l, r] = ramps[i]
-      const len = breaks[i + 1] - breaks[i]
-      if (d < l) return sx + ((k - sx) * d) / l
-      if (d > len - r) return k - ((k - sx) * (d - (len - r))) / r
-      return k
-    }
-    const integral = (i: number, d: number) => {
-      if (i < 0 || i >= locked.length || !stretches(i)) return sx * d
-      const [l, r] = ramps[i]
-      const len = breaks[i + 1] - breaks[i]
-      const a = Math.min(d, l)
-      let sum = sx * a + (l ? ((k - sx) * a * a) / (2 * l) : 0)
-      if (d > l) sum += k * (Math.min(d, len - r) - l)
-      if (d > len - r) {
-        const t = d - (len - r)
-        sum += k * t - ((k - sx) * t * t) / (2 * r)
-      }
-      return sum
-    }
-
-    const mapped: number[] = new Array(breaks.length)
-    const zero = breaks.indexOf(0)
-    mapped[zero] = 0
-    for (let i = zero; i < breaks.length - 1; i++) mapped[i + 1] = mapped[i] + integral(i, breaks[i + 1] - breaks[i])
-    for (let i = zero - 1; i >= 0; i--) mapped[i] = mapped[i + 1] - integral(i, breaks[i + 1] - breaks[i])
-
-    const last = breaks.length - 1
-    const band = (y: number) => {
-      let i = 0
-      while (i < last - 1 && breaks[i + 1] < y) i++
-      return i
-    }
-    return {
-      f: (y: number) => {
-        if (y <= breaks[0]) return mapped[0] + (y - breaks[0]) * sx
-        if (y >= breaks[last]) return mapped[last] + (y - breaks[last]) * sx
-        const i = band(y)
-        return mapped[i] + integral(i, y - breaks[i])
-      },
-      /** How fast f grows at y. */
-      slope: (y: number) => {
-        if (y <= breaks[0] || y >= breaks[last]) return sx
-        const i = band(y)
-        return rate(i, y - breaks[i])
-      },
-    }
+  /** Advance width of the stretched glyph. */
+  advance(g: Glyph, stretch: Stretch) {
+    return g.advance * stretch.sx
   }
 
   /** SVG path data for a stretched, slanted glyph — usable in <path d> and new Path2D(). */
   path(g: Glyph, stretch: Stretch, at: Placement) {
-    const { point, handle } = this.mapper(g, stretch, at)
-    const xy = ([x, y]: [number, number]) => `${x.toFixed(2)} ${y.toFixed(2)}`
+    const xy = ([x, y]: XY) => `${x.toFixed(2)} ${y.toFixed(2)}`
     let d = ''
-    for (const { start, segs } of g.contours) {
-      d += `M${xy(point(start))}`
-      let p = start
-      for (const seg of segs) {
-        if (seg.line) d += `L${xy(point(seg.to))}`
-        else d += `C${xy(handle(p, seg.c1, seg.lineIn))} ${xy(handle(seg.to, seg.c2, seg.lineOut))} ${xy(point(seg.to))}`
-        p = seg.to
-      }
+    for (const { start, segs } of this.transform(g, stretch, at)) {
+      d += `M${xy(start)}`
+      for (const seg of segs) d += seg.line ? `L${xy(seg.to)}` : `C${xy(seg.c1)} ${xy(seg.c2)} ${xy(seg.to)}`
       d += 'Z'
     }
     return d
@@ -343,7 +338,6 @@ export class TypeEngine {
    * left[r] / right[r] are its leftmost and rightmost x, or ±Infinity where the row is empty.
    */
   profile(g: Glyph, stretch: Stretch, at: Placement, rows: Rows) {
-    const { point, handle } = this.mapper(g, stretch, at)
     const left = new Float64Array(rows.count).fill(Infinity)
     const right = new Float64Array(rows.count).fill(-Infinity)
     const rowH = (rows.bottom - rows.top) / rows.count
@@ -353,8 +347,8 @@ export class TypeEngine {
       if (X < left[r]) left[r] = X
       if (X > right[r]) right[r] = X
     }
-    // Sample each (already mapped) segment finely enough that samples are under half a row apart
-    const sample = (pts: [number, number][]) => {
+    // Sample each segment finely enough that samples are under half a row apart
+    const sample = (pts: XY[]) => {
       let reach = 0
       for (let i = 1; i < pts.length; i++) reach += Math.abs(pts[i][1] - pts[i - 1][1])
       const n = Math.min(256, Math.ceil(reach / (rowH / 2)) + 1)
@@ -371,38 +365,46 @@ export class TypeEngine {
         }
       }
     }
-    for (const { start, segs } of g.contours) {
+    for (const { start, segs } of this.transform(g, stretch, at)) {
       let p = start
-      let P = point(p)
       for (const seg of segs) {
-        const Q = point(seg.to)
-        sample(seg.line ? [P, Q] : [P, handle(p, seg.c1, seg.lineIn), handle(seg.to, seg.c2, seg.lineOut), Q])
+        sample(seg.line ? [p, seg.to] : [p, seg.c1, seg.c2, seg.to])
         p = seg.to
-        P = Q
       }
     }
     return { left, right }
   }
 
   /**
-   * Maps outline points (font units) into the space of `at`: stretched, scaled, slanted and placed.
-   * On-curve points go through the vertical remap; each control point instead moves with its
-   * on-curve point, scaled by how fast the remap grows right there (or like the straight segment
-   * the curve continues). Both handles of a smooth join are then scaled alike and stay aligned,
-   * so curves don't pick up corners where they cross from one band into another.
+   * The glyph's outline stretched, scaled, slanted and placed into the space of `at`. Points are
+   * scaled across by sx and go through the band remap up, which stretches the open bands while
+   * horizontal strokes keep their thickness. Control points move with their on-curve point,
+   * scaled by how fast the remap grows right there (or like the straight segment the curve
+   * continues), so smooth joins stay smooth.
    */
-  private mapper(g: Glyph, stretch: Stretch, at: Placement) {
-    const { f, slope } = this.yMap(g, stretch)
-    const place = (X: number, Y: number): [number, number] => {
-      const y = at.baseline - Y * at.scale
-      return [at.x + X * at.scale + (at.pivot - y) * at.slant, y]
+  private transform(g: Glyph, stretch: Stretch, at: Placement) {
+    const Y = bandMap(g.bands, stretch.sy, stretch.w)
+    const place = (px: number, py: number): XY => {
+      const y = at.baseline - py * at.scale
+      return [at.x + px * stretch.sx * at.scale + (at.pivot - y) * at.slant, y]
     }
-    const point = (p: Pt) => place(p.x * stretch.sx, f(p.y))
-    const handle = (p: Pt, h: Pt, lineY?: number) => {
-      const s = lineY !== undefined && Math.abs(lineY - p.y) > 1 ? (f(lineY) - f(p.y)) / (lineY - p.y) : slope(p.y)
-      return place(h.x * stretch.sx, f(p.y) + (h.y - p.y) * s)
+    const point = (p: Pt) => place(p.x, Y.f(p.y))
+    const handle = (p: Pt, h: Pt, line?: Pt) => {
+      const sy = line && Math.abs(line.y - p.y) > 1 ? (Y.f(line.y) - Y.f(p.y)) / (line.y - p.y) : Y.slope(p.y)
+      return place(h.x, Y.f(p.y) + (h.y - p.y) * sy)
     }
-    return { point, handle }
+    return g.contours.map(({ start, segs }) => ({
+      start: point(start),
+      segs: segs.map((seg, i) => {
+        const from = i ? segs[i - 1].to : start
+        return {
+          line: seg.line,
+          c1: seg.line ? ([0, 0] as XY) : handle(from, seg.c1, seg.lineIn),
+          c2: seg.line ? ([0, 0] as XY) : handle(seg.to, seg.c2, seg.lineOut),
+          to: point(seg.to),
+        }
+      }),
+    }))
   }
 
   /**
@@ -490,37 +492,174 @@ function markLineJoins(contours: Contour[]) {
       if (seg.line) return
       const prev = (i - 1 + n) % n
       const next = (i + 1) % n
-      seg.lineIn = segs[prev].line ? from(prev).y : undefined
-      seg.lineOut = segs[next].line ? segs[next].to.y : undefined
+      seg.lineIn = segs[prev].line ? from(prev) : undefined
+      seg.lineOut = segs[next].line ? segs[next].to : undefined
     })
   }
+}
+
+/**
+ * Slices one direction of a glyph at its stroke edges. Bands thinner than `lockBelow` are strokes.
+ * Open bands inside lo–hi stretch, easing in over up to EASE_IN·C from edges next to a stroke.
+ */
+function makeBands(edges: number[], lo: number, hi: number, lockBelow: number, C: number): Bands {
+  const breaks = [lo, hi]
+  for (const v of edges.sort((a, b) => a - b)) {
+    if (breaks.every((b) => Math.abs(b - v) > 2)) breaks.push(v)
+  }
+  breaks.sort((a, b) => a - b)
+  const locked = breaks.slice(1).map((b, i) => b - breaks[i] < lockBelow)
+  const stretches = (i: number) => i >= 0 && i < locked.length && breaks[i] >= lo && breaks[i + 1] <= hi && !locked[i]
+  const ramps = locked.map((_, i): [number, number] => {
+    if (!stretches(i)) return [0, 0]
+    const w = Math.min(EASE_IN * C, (breaks[i + 1] - breaks[i]) / 2)
+    return [stretches(i - 1) ? 0 : w, stretches(i + 1) ? 0 : w]
+  })
+  return { breaks, locked, ramps, lo, hi }
+}
+
+/** Where the stretch changes character along this direction: band edges and the middles and ends of ramps. */
+function levelsOf({ breaks, ramps }: Bands) {
+  const levels = new Set(breaks)
+  ramps.forEach(([l, r], i) => {
+    if (l) [breaks[i] + l / 2, breaks[i] + l].forEach((v) => levels.add(v))
+    if (r) [breaks[i + 1] - r, breaks[i + 1] - r / 2].forEach((v) => levels.add(v))
+  })
+  return [...levels]
+}
+
+/**
+ * Vertical remap: lo–hi (baseline to cap height) grows to (hi − lo)·scale. Strokes and everything
+ * outside lo–hi grow by `base` only (1 keeps their size); the open bands absorb the rest, easing in
+ * over their ramps so the remap has no sudden change of rate. f(lo) = lo keeps the baseline put.
+ */
+function bandMap({ breaks, locked, ramps, lo, hi }: Bands, scale: number, base: number) {
+  const uniform = { f: (v: number) => lo + (v - lo) * scale, slope: () => scale }
+  const stretches = (i: number) => i >= 0 && i < locked.length && breaks[i] >= lo && breaks[i + 1] <= hi && !locked[i]
+  let fixedLen = 0 // grows by `base`: strokes plus half of every ramp
+  let freeLen = 0 // grows at k
+  for (let i = 0; i < locked.length; i++) {
+    if (breaks[i] < lo || breaks[i + 1] > hi) continue
+    const len = breaks[i + 1] - breaks[i]
+    if (!stretches(i)) fixedLen += len
+    else {
+      const half = (ramps[i][0] + ramps[i][1]) / 2
+      fixedLen += half
+      freeLen += len - half
+    }
+  }
+  if (freeLen < 1) return uniform
+  const k = Math.max(base, ((hi - lo) * scale - base * fixedLen) / freeLen)
+
+  // growth rate d units into band i, and its integral
+  const rate = (i: number, d: number) => {
+    if (!stretches(i)) return base
+    const [l, r] = ramps[i]
+    const len = breaks[i + 1] - breaks[i]
+    if (d < l) return base + ((k - base) * d) / l
+    if (d > len - r) return k - ((k - base) * (d - (len - r))) / r
+    return k
+  }
+  const integral = (i: number, d: number) => {
+    if (!stretches(i)) return base * d
+    const [l, r] = ramps[i]
+    const len = breaks[i + 1] - breaks[i]
+    const a = Math.min(d, l)
+    let sum = base * a + (l ? ((k - base) * a * a) / (2 * l) : 0)
+    if (d > l) sum += k * (Math.min(d, len - r) - l)
+    if (d > len - r) {
+      const t = d - (len - r)
+      sum += k * t - ((k - base) * t * t) / (2 * r)
+    }
+    return sum
+  }
+
+  const mapped: number[] = new Array(breaks.length)
+  const anchor = breaks.indexOf(lo)
+  mapped[anchor] = lo
+  for (let i = anchor; i < breaks.length - 1; i++) mapped[i + 1] = mapped[i] + integral(i, breaks[i + 1] - breaks[i])
+  for (let i = anchor - 1; i >= 0; i--) mapped[i] = mapped[i + 1] - integral(i, breaks[i + 1] - breaks[i])
+
+  const last = breaks.length - 1
+  const band = (v: number) => {
+    let i = 0
+    while (i < last - 1 && breaks[i + 1] < v) i++
+    return i
+  }
+  return {
+    f: (v: number) => {
+      if (v <= breaks[0]) return mapped[0] + (v - breaks[0]) * base
+      if (v >= breaks[last]) return mapped[last] + (v - breaks[last]) * base
+      const i = band(v)
+      return mapped[i] + integral(i, v - breaks[i])
+    },
+    /** How fast f grows at v. */
+    slope: (v: number) => {
+      if (v <= breaks[0] || v >= breaks[last]) return base
+      const i = band(v)
+      return rate(i, v - breaks[i])
+    },
+  }
+}
+
+/** Sorted positions where the outline crosses the line axis = at (x = at when axis is 'x'). */
+function crossings(contours: Contour[], axis: 'x' | 'y', at: number) {
+  const other = axis === 'x' ? 'y' : 'x'
+  const hits: number[] = []
+  for (const { start, segs } of contours) {
+    let p = start
+    for (const seg of segs) {
+      const pts = seg.line ? [p, seg.to] : [p, seg.c1, seg.c2, seg.to]
+      const n = seg.line ? 1 : 32
+      let prev = pts[0]
+      for (let i = 1; i <= n; i++) {
+        const t = i / n
+        const u = 1 - t
+        const q = seg.line
+          ? seg.to
+          : {
+              x: u * u * u * pts[0].x + 3 * u * u * t * pts[1].x + 3 * u * t * t * pts[2].x + t * t * t * pts[3].x,
+              y: u * u * u * pts[0].y + 3 * u * u * t * pts[1].y + 3 * u * t * t * pts[2].y + t * t * t * pts[3].y,
+            }
+        if ((prev[axis] - at) * (q[axis] - at) < 0) {
+          const f = (at - prev[axis]) / (q[axis] - prev[axis])
+          hits.push(prev[other] + (q[other] - prev[other]) * f)
+        }
+        prev = q
+      }
+      p = seg.to
+    }
+  }
+  return hits.sort((a, b) => a - b)
 }
 
 /** Splits a curve (starting at `from`) wherever it crosses one of the horizontal `levels`. Lines are left whole. */
 function splitAtLevels(seg: Segment, from: Pt, levels: number[]): Segment[] {
   if (seg.line) return [seg]
   const pts = [from, seg.c1, seg.c2, seg.to]
-  const y = (t: number) => {
-    const u = 1 - t
-    return u * u * u * pts[0].y + 3 * u * u * t * pts[1].y + 3 * u * t * t * pts[2].y + t * t * t * pts[3].y
-  }
-  const lo = Math.min(...pts.map((p) => p.y))
-  const hi = Math.max(...pts.map((p) => p.y))
   const ts: number[] = []
   const STEPS = 32
-  for (const level of levels) {
-    if (level <= lo || level >= hi) continue
-    for (let i = 0; i < STEPS; i++) {
-      let a = i / STEPS
-      let b = (i + 1) / STEPS
-      if ((y(a) - level) * (y(b) - level) > 0) continue
-      for (let n = 0; n < 40; n++) {
-        const m = (a + b) / 2
-        if ((y(a) - level) * (y(m) - level) <= 0) b = m
-        else a = m
+  for (const axis of ['y'] as const) {
+    const v = (t: number) => {
+      const u = 1 - t
+      return u * u * u * pts[0][axis] + 3 * u * u * t * pts[1][axis] + 3 * u * t * t * pts[2][axis] + t * t * t * pts[3][axis]
+    }
+    const lo = Math.min(...pts.map((p) => p[axis]))
+    const hi = Math.max(...pts.map((p) => p[axis]))
+    for (const level of levels) {
+      if (level <= lo || level >= hi) continue
+      for (let i = 0; i < STEPS; i++) {
+        let a = i / STEPS
+        let b = (i + 1) / STEPS
+        if ((v(a) - level) * (v(b) - level) > 0) continue
+        for (let n = 0; n < 40; n++) {
+          const m = (a + b) / 2
+          if ((v(a) - level) * (v(m) - level) <= 0) b = m
+          else a = m
+        }
+        const t = (a + b) / 2
+        if (t > 1e-4 && t < 1 - 1e-4 && ts.every((s) => Math.abs(s - t) > 1e-4)) ts.push(t)
       }
-      const t = (a + b) / 2
-      if (t > 1e-4 && t < 1 - 1e-4 && ts.every((s) => Math.abs(s - t) > 1e-4)) ts.push(t)
     }
   }
   if (!ts.length) return [seg]

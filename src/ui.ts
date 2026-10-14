@@ -12,7 +12,7 @@ import {
   type ItalicMode,
 } from './state'
 
-type NumberKey = 'minHeight' | 'maxHeight' | 'minItalic' | 'maxItalic' | 'weight'
+type NumberKey = 'minHeight' | 'maxHeight' | 'minItalic' | 'maxItalic' | 'weight' | 'stroke'
 type Range = [number, number]
 
 const HEIGHT_MODES: HeightMode[] = ['up', 'valley', 'easeUp', 'down', 'peak', 'easeDown']
@@ -50,7 +50,10 @@ export function initPanel(engine: TypeEngine, changed: () => void) {
 
   const percent = (): Range => [0, 100]
   const italic = (): Range => [0, MAX_ITALIC]
-  $('#weight-slider').append(slider('Weight', 'weight', () => panelEngine.weightRange))
+  $('#weight-slider').append(
+    slider('Weight', 'weight', () => panelEngine.weightRange),
+    slider('Stroke', 'stroke', percent),
+  )
   $('#height-sliders').append(slider('Min Height', 'minHeight', percent), slider('Max Height', 'maxHeight', percent))
   $('#italic-sliders').append(slider('Min Italic', 'minItalic', italic), slider('Max Italic', 'maxItalic', italic))
 
