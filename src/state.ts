@@ -45,7 +45,7 @@ export interface State {
 }
 
 export const state: State = {
-  text: 'MOZART',
+  text: 'OPERA',
   baseline: 'bottom',
   heightMode: null,
   italicMode: null,
