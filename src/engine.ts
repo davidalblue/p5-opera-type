@@ -17,6 +17,8 @@ interface Segment {
   // stretched exactly like the line, so the join stays smooth.
   lineIn?: Pt
   lineOut?: Pt
+  // Curves only: which run of consecutive curves this belongs to (see Glyph.runs)
+  run?: number
 }
 
 type XY = [number, number]
@@ -50,6 +52,11 @@ export interface Glyph {
   contours: Contour[]
   advance: number
   bands: Bands
+  // Each run of consecutive curves (a bowl, an O, the arc of a C) is stretched evenly as a whole
+  // rather than band by band, so it keeps its smooth shape. Its anchors — its top, bottom and the
+  // ends where it meets straight lines — land where the band remap puts them, and it's stretched
+  // linearly in between, so it still joins the rest of the letter exactly.
+  runs: number[][]
 }
 
 /**
@@ -88,9 +95,9 @@ const MIN_STROKE = 0.12
 // Flat lines shorter than this share of the cap height (the inside of an A's apex, the point of
 // a V) are corners, not the edges of horizontal strokes
 const MIN_FLAT = 0.05
-// Distance over which the stretch eases in at the edge of a stretching band, as a share of the cap height.
-// Long enough that stretched bowls (O, P, D…) stay oval; shorter values give them boxy shoulders.
-const EASE_IN = 0.25
+// Distance over which the stretch eases in next to a straight horizontal stroke, as a share of the
+// cap height. Just enough to keep curves smooth there; longer would flatten bowls next to it.
+const EASE_IN = 0.06
 // Glyph cache entries kept before the cache is cleared (variable fonts add an entry per weight/slant)
 const CACHE_LIMIT = 4000
 
@@ -323,14 +330,10 @@ export class TypeEngine {
     }
     const bands = makeBands(yEdges, 0, C, Math.max(MIN_STROKE * C, STROKE_FACTOR * bar), C, curves)
 
-    // Split curves wherever the stretch changes character, so every piece maps cleanly
-    const levels = levelsOf(bands)
-    for (const contour of contours) {
-      contour.segs = contour.segs.flatMap((seg, i) => splitAtLevels(seg, i ? contour.segs[i - 1].to : contour.start, levels))
-    }
+    const runs = findRuns(contours)
     markLineJoins(contours)
 
-    return { contours, advance, bands }
+    return { contours, advance, bands, runs }
   }
 
   /** Advance width of the stretched glyph. */
@@ -405,21 +408,32 @@ export class TypeEngine {
       const y = at.baseline - py * at.scale
       return [at.x + px * stretch.sx * at.scale + (at.pivot - y) * at.slant, y]
     }
+    const runMaps = g.runs.map((anchors) => linearThrough(anchors, anchors.map(Y.f)))
+    // straight lines follow the band remap; curves their run's even stretch
+    const mapOf = (seg: Segment) => (seg.line || seg.run === undefined ? Y : runMaps[seg.run])
+
     return g.contours.map(({ start, segs }) => {
-      const point = (p: Pt) => place(p.x, Y.f(p.y))
-      const handle = (p: Pt, h: Pt, line?: Pt) => {
-        const sy = line && Math.abs(line.y - p.y) > 1 ? (Y.f(line.y) - Y.f(p.y)) / (line.y - p.y) : Y.slope(p.y)
-        return place(h.x, Y.f(p.y) + (h.y - p.y) * sy)
+      const handle = (m: typeof Y, from: Pt, to: Pt, p: Pt, h: Pt, line?: Pt) => {
+        // a curve continuing a straight line leaves it in the line's mapped direction; otherwise
+        // its handles scale like the curve's own stretch
+        const sy =
+          line && Math.abs(line.y - p.y) > 1
+            ? (Y.f(line.y) - Y.f(p.y)) / (line.y - p.y)
+            : Math.abs(to.y - from.y) > 0.5
+              ? (m.f(to.y) - m.f(from.y)) / (to.y - from.y)
+              : m.slope(p.y)
+        return place(h.x, m.f(p.y) + (h.y - p.y) * sy)
       }
       return {
-        start: point(start),
+        start: place(start.x, mapOf(segs[0]).f(start.y)),
         segs: segs.map((seg, i) => {
           const from = i ? segs[i - 1].to : start
+          const m = mapOf(seg)
           return {
             line: seg.line,
-            c1: seg.line ? ([0, 0] as XY) : handle(from, seg.c1, seg.lineIn),
-            c2: seg.line ? ([0, 0] as XY) : handle(seg.to, seg.c2, seg.lineOut),
-            to: point(seg.to),
+            c1: seg.line ? ([0, 0] as XY) : handle(m, from, seg.to, from, seg.c1, seg.lineIn),
+            c2: seg.line ? ([0, 0] as XY) : handle(m, from, seg.to, seg.to, seg.c2, seg.lineOut),
+            to: place(seg.to.x, m.f(seg.to.y)),
           }
         }),
       }
@@ -502,6 +516,71 @@ function toContours(commands: PathCommand[]): Contour[] {
   return contours.filter((c) => c.segs.length)
 }
 
+/**
+ * Groups consecutive curves into runs (a contour with no straight lines is one closed run) and
+ * returns each run's anchors: the heights of its ends and its top and bottom. Curves are split
+ * at their run's anchor heights, so every piece lies within one evenly stretched span.
+ */
+function findRuns(contours: Contour[]): number[][] {
+  const runs: number[][] = []
+  for (const contour of contours) {
+    const { start, segs } = contour
+    const n = segs.length
+    const from = (i: number) => (i === 0 ? start : segs[i - 1].to)
+    const groups: number[][] = []
+    const firstLine = segs.findIndex((seg) => seg.line)
+    if (firstLine < 0) groups.push(segs.map((_, i) => i))
+    else {
+      let current: number[] = []
+      for (let k = 1; k <= n; k++) {
+        const i = (firstLine + k) % n
+        if (!segs[i].line) current.push(i)
+        else if (current.length) {
+          groups.push(current)
+          current = []
+        }
+      }
+      if (current.length) groups.push(current)
+    }
+    const runOf = new Map<number, number>()
+    for (const group of groups) {
+      const ys = [from(group[0]).y, ...group.map((i) => segs[i].to.y)]
+      const closed = firstLine < 0
+      const marks = [Math.min(...ys), Math.max(...ys), ...(closed ? [] : [ys[0], ys[ys.length - 1]])]
+      const anchors = [...new Set(marks.map((y) => Math.round(y * 100) / 100))].sort((a, b) => a - b)
+      for (const i of group) runOf.set(i, runs.length)
+      runs.push(anchors)
+    }
+    contour.segs = segs.flatMap((seg, i) => {
+      const run = runOf.get(i)
+      if (run === undefined) return [seg]
+      return splitAtLevels(seg, from(i), runs[run]).map((piece) => ({ ...piece, run }))
+    })
+  }
+  return runs
+}
+
+/** A piecewise-linear map through (xs[i], ys[i]), extended linearly past both ends. */
+function linearThrough(xs: number[], ys: number[]) {
+  if (xs.length < 2) {
+    const shift = ys[0] - xs[0]
+    return { f: (v: number) => v + shift, slope: () => 1 }
+  }
+  const piece = (v: number) => {
+    let i = 0
+    while (i < xs.length - 2 && xs[i + 1] < v) i++
+    return i
+  }
+  const rate = (i: number) => (xs[i + 1] - xs[i] > 1e-6 ? (ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]) : 1)
+  return {
+    f: (v: number) => {
+      const i = piece(v)
+      return ys[i] + (v - xs[i]) * rate(i)
+    },
+    slope: (v: number) => rate(piece(v)),
+  }
+}
+
 /** Notes which curves continue a straight line, so their handles can follow that line. */
 function markLineJoins(contours: Contour[]) {
   for (const { start, segs } of contours) {
@@ -524,8 +603,8 @@ interface Edge {
 }
 
 /**
- * Slices a glyph at its horizontal stroke edges. Bands thinner than `lockBelow` are strokes, and
- * `flat` ones when bounded by a flat line. Open bands inside lo–hi stretch, easing in over up to
+ * Slices a glyph at its horizontal stroke edges. Bands bounded by a flat line and thinner than
+ * `lockBelow` are straight horizontal strokes, which keep their thickness. Open bands inside lo–hi stretch, easing in over up to
  * EASE_IN·C from edges next to a stroke — but only where one of the `curves` (their y ranges) passes
  * through, since the ease-in is there to keep curves smooth. Straight lines need none, and stay
  * exactly consistent without it (an A's apex).
@@ -542,8 +621,10 @@ function makeBands(edges: Edge[], lo: number, hi: number, lockBelow: number, C: 
   }
   marks.sort((a, b) => a.y - b.y)
   const breaks = marks.map((m) => m.y)
-  const locked = breaks.slice(1).map((b, i) => b - breaks[i] < lockBelow)
-  const flat = locked.map((_, i) => marks[i].flat || marks[i + 1].flat)
+  const flat = breaks.slice(1).map((_, i) => marks[i].flat || marks[i + 1].flat)
+  // Only straight horizontal strokes keep their thickness. The curved tops and bottoms of bowls
+  // stretch along with the rest of the curve, so bowls stay round ovals (as in the reference)
+  const locked = breaks.slice(1).map((b, i) => flat[i] && b - breaks[i] < lockBelow)
   const stretches = (i: number) => i >= 0 && i < locked.length && breaks[i] >= lo && breaks[i + 1] <= hi && !locked[i]
   const crossed = (a: number, b: number) => curves.some(([c0, c1]) => c0 < b && c1 > a)
   const ramps = locked.map((_, i): [number, number] => {
@@ -557,16 +638,6 @@ function makeBands(edges: Edge[], lo: number, hi: number, lockBelow: number, C: 
     ]
   })
   return { breaks, locked, flat, ramps, lo, hi }
-}
-
-/** Where the stretch changes character along this direction: band edges and the middles and ends of ramps. */
-function levelsOf({ breaks, ramps }: Bands) {
-  const levels = new Set(breaks)
-  ramps.forEach(([l, r], i) => {
-    if (l) [breaks[i] + l / 2, breaks[i] + l].forEach((v) => levels.add(v))
-    if (r) [breaks[i + 1] - r, breaks[i + 1] - r / 2].forEach((v) => levels.add(v))
-  })
-  return [...levels]
 }
 
 /**
