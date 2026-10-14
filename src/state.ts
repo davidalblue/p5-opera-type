@@ -38,7 +38,7 @@ export interface State {
   minItalic: number
   maxItalic: number
   weight: number // applies to fonts with a weight axis; not touched by Reset Selection
-  stroke: number // 0–100: how much strokes thicken as letters grow (0 keeps the font's thickness)
+  stroke: number // 0–100: how much stems and curves thicken as letters grow (0 keeps the font's thickness)
   random: { height: number[]; italic: number[]; anchor: number[] }
   // Where each letter has been dragged to, relative to its place in the word (in box heights)
   offsets: { x: number; y: number }[]
@@ -51,7 +51,7 @@ export const state: State = {
   italicMode: null,
   ...DEFAULTS,
   weight: 400,
-  stroke: 0,
+  stroke: 100,
   random: { height: [], italic: [], anchor: [] },
   offsets: [],
 }

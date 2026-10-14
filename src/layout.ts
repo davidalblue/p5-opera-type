@@ -33,15 +33,14 @@ const MIN_GAP = 0.08
 const ROWS = 120
 
 /**
- * A letter at full height is `maxStretch` times its resting cap height, but only about twice as
- * wide, which gives tall letters their condensed look. `growth` (0–1) is how much its strokes
+ * A letter at full height is `maxStretch` times its resting cap height, but less than three times
+ * as wide, which gives tall letters their condensed look. `growth` (0–1) is how much its strokes
  * thicken along with it: 0 keeps the font's own stroke thickness, 1 lets strokes grow as much as
- * the letter widens. (Horizontal strokes follow `w`; vertical ones are kept in check by drawing
- * the letter from a lighter weight, see layoutWord.)
+ * the letter widens (like the reference). Straight horizontal strokes keep their thickness either way.
  */
 export function stretchFor(height: number, maxStretch: number, growth = 0): Stretch {
   const sy = 1 + (maxStretch - 1) * height
-  const sx = sy ** 0.4
+  const sx = sy ** 0.55
   return { sx, sy, w: 1 + (sx - 1) * growth }
 }
 

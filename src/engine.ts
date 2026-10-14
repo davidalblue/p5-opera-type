@@ -34,6 +34,10 @@ interface Contour {
 interface Bands {
   breaks: number[]
   locked: boolean[]
+  // Per band: a straight horizontal stroke (crossbar, arm, serif — bounded by a flat line), which
+  // keeps its thickness exactly, as opposed to the curved top or bottom of a bowl, which grows
+  // with the letter like the rest of its strokes so bowls stay round
+  flat: boolean[]
   // Per band: how far (font units) the stretch takes to ease in from each edge, so curves
   // crossing from a stroke into an open band bend smoothly instead of kinking
   ramps: [number, number][]
@@ -49,9 +53,10 @@ export interface Glyph {
 }
 
 /**
- * How much a glyph grows: sy scales its cap height and sx its width. Horizontal strokes don't
- * follow: they get w times thicker (1 keeps the font's own thickness). Vertical strokes are kept
- * in check by drawing the glyph from a lighter weight (see TypeEngine.weightFor).
+ * How much a glyph grows: sy scales its cap height and sx its width. Strokes get w times thicker
+ * (1 keeps the font's own thickness): stems by drawing the glyph from a lighter weight (see
+ * TypeEngine.weightFor), the curved tops and bottoms of bowls through the band remap. Straight
+ * horizontal strokes (crossbars, arms, serifs) always keep the font's thickness.
  */
 export interface Stretch {
   sx: number
@@ -80,6 +85,9 @@ export interface Rows {
 const STROKE_FACTOR = 1.5
 // …or, for horizontal strokes, thinner than this share of the cap height
 const MIN_STROKE = 0.12
+// Flat lines shorter than this share of the cap height (the inside of an A's apex, the point of
+// a V) are corners, not the edges of horizontal strokes
+const MIN_FLAT = 0.05
 // Distance over which the stretch eases in at the edge of a stretching band, as a share of the cap height.
 // Long enough that stretched bowls (O, P, D…) stay oval; shorter values give them boxy shoulders.
 const EASE_IN = 0.25
@@ -280,7 +288,7 @@ export class TypeEngine {
 
     // Horizontal stroke edges: flat lines, and curves leaving or arriving horizontally
     // (the tops and bottoms of bowls)
-    const yEdges: number[] = []
+    const yEdges: Edge[] = []
     let minY = 0
     let maxY = C
     for (const { start, segs } of contours) {
@@ -289,10 +297,10 @@ export class TypeEngine {
         const { to } = seg
         const dx = Math.abs(to.x - p.x)
         if (seg.line) {
-          if (dx > 4 && Math.abs(to.y - p.y) <= 0.1 * dx) yEdges.push((to.y + p.y) / 2)
+          if (dx > MIN_FLAT * C && Math.abs(to.y - p.y) <= 0.1 * dx) yEdges.push({ y: (to.y + p.y) / 2, flat: true })
         } else {
-          if (Math.abs(seg.c1.x - p.x) > 1 && Math.abs(seg.c1.y - p.y) < 1.5) yEdges.push(p.y)
-          if (Math.abs(seg.c2.x - to.x) > 1 && Math.abs(seg.c2.y - to.y) < 1.5) yEdges.push(to.y)
+          if (Math.abs(seg.c1.x - p.x) > 1 && Math.abs(seg.c1.y - p.y) < 1.5) yEdges.push({ y: p.y, flat: false })
+          if (Math.abs(seg.c2.x - to.x) > 1 && Math.abs(seg.c2.y - to.y) < 1.5) yEdges.push({ y: to.y, flat: false })
         }
         for (const q of seg.line ? [to] : [seg.c1, seg.c2, to]) {
           minY = Math.min(minY, q.y)
@@ -301,10 +309,19 @@ export class TypeEngine {
         p = to
       }
     }
-    yEdges.push(minY, maxY)
+    yEdges.push({ y: minY, flat: false }, { y: maxY, flat: false })
 
     // 0 and the cap height are always breaks, so the baseline and cap line map exactly
-    const bands = makeBands(yEdges, 0, C, Math.max(MIN_STROKE * C, STROKE_FACTOR * bar), C)
+    // the heights curves span, so ease-ins are only added where a curve passes through
+    const curves: [number, number][] = []
+    for (const { start, segs } of contours) {
+      segs.forEach((seg, i) => {
+        if (seg.line) return
+        const ys = [(i ? segs[i - 1].to : start).y, seg.c1.y, seg.c2.y, seg.to.y]
+        curves.push([Math.min(...ys), Math.max(...ys)])
+      })
+    }
+    const bands = makeBands(yEdges, 0, C, Math.max(MIN_STROKE * C, STROKE_FACTOR * bar), C, curves)
 
     // Split curves wherever the stretch changes character, so every piece maps cleanly
     const levels = levelsOf(bands)
@@ -388,23 +405,25 @@ export class TypeEngine {
       const y = at.baseline - py * at.scale
       return [at.x + px * stretch.sx * at.scale + (at.pivot - y) * at.slant, y]
     }
-    const point = (p: Pt) => place(p.x, Y.f(p.y))
-    const handle = (p: Pt, h: Pt, line?: Pt) => {
-      const sy = line && Math.abs(line.y - p.y) > 1 ? (Y.f(line.y) - Y.f(p.y)) / (line.y - p.y) : Y.slope(p.y)
-      return place(h.x, Y.f(p.y) + (h.y - p.y) * sy)
-    }
-    return g.contours.map(({ start, segs }) => ({
-      start: point(start),
-      segs: segs.map((seg, i) => {
-        const from = i ? segs[i - 1].to : start
-        return {
-          line: seg.line,
-          c1: seg.line ? ([0, 0] as XY) : handle(from, seg.c1, seg.lineIn),
-          c2: seg.line ? ([0, 0] as XY) : handle(seg.to, seg.c2, seg.lineOut),
-          to: point(seg.to),
-        }
-      }),
-    }))
+    return g.contours.map(({ start, segs }) => {
+      const point = (p: Pt) => place(p.x, Y.f(p.y))
+      const handle = (p: Pt, h: Pt, line?: Pt) => {
+        const sy = line && Math.abs(line.y - p.y) > 1 ? (Y.f(line.y) - Y.f(p.y)) / (line.y - p.y) : Y.slope(p.y)
+        return place(h.x, Y.f(p.y) + (h.y - p.y) * sy)
+      }
+      return {
+        start: point(start),
+        segs: segs.map((seg, i) => {
+          const from = i ? segs[i - 1].to : start
+          return {
+            line: seg.line,
+            c1: seg.line ? ([0, 0] as XY) : handle(from, seg.c1, seg.lineIn),
+            c2: seg.line ? ([0, 0] as XY) : handle(seg.to, seg.c2, seg.lineOut),
+            to: point(seg.to),
+          }
+        }),
+      }
+    })
   }
 
   /**
@@ -498,24 +517,46 @@ function markLineJoins(contours: Contour[]) {
   }
 }
 
+/** A horizontal edge of the outline: a flat line, or a curve leaving or arriving horizontally. */
+interface Edge {
+  y: number
+  flat: boolean
+}
+
 /**
- * Slices one direction of a glyph at its stroke edges. Bands thinner than `lockBelow` are strokes.
- * Open bands inside lo–hi stretch, easing in over up to EASE_IN·C from edges next to a stroke.
+ * Slices a glyph at its horizontal stroke edges. Bands thinner than `lockBelow` are strokes, and
+ * `flat` ones when bounded by a flat line. Open bands inside lo–hi stretch, easing in over up to
+ * EASE_IN·C from edges next to a stroke — but only where one of the `curves` (their y ranges) passes
+ * through, since the ease-in is there to keep curves smooth. Straight lines need none, and stay
+ * exactly consistent without it (an A's apex).
  */
-function makeBands(edges: number[], lo: number, hi: number, lockBelow: number, C: number): Bands {
-  const breaks = [lo, hi]
-  for (const v of edges.sort((a, b) => a - b)) {
-    if (breaks.every((b) => Math.abs(b - v) > 2)) breaks.push(v)
+function makeBands(edges: Edge[], lo: number, hi: number, lockBelow: number, C: number, curves: [number, number][]): Bands {
+  const marks: Edge[] = [
+    { y: lo, flat: false },
+    { y: hi, flat: false },
+  ]
+  for (const e of [...edges].sort((a, b) => a.y - b.y)) {
+    const near = marks.find((m) => Math.abs(m.y - e.y) <= 2)
+    if (near) near.flat ||= e.flat
+    else marks.push({ ...e })
   }
-  breaks.sort((a, b) => a - b)
+  marks.sort((a, b) => a.y - b.y)
+  const breaks = marks.map((m) => m.y)
   const locked = breaks.slice(1).map((b, i) => b - breaks[i] < lockBelow)
+  const flat = locked.map((_, i) => marks[i].flat || marks[i + 1].flat)
   const stretches = (i: number) => i >= 0 && i < locked.length && breaks[i] >= lo && breaks[i + 1] <= hi && !locked[i]
+  const crossed = (a: number, b: number) => curves.some(([c0, c1]) => c0 < b && c1 > a)
   const ramps = locked.map((_, i): [number, number] => {
     if (!stretches(i)) return [0, 0]
     const w = Math.min(EASE_IN * C, (breaks[i + 1] - breaks[i]) / 2)
-    return [stretches(i - 1) ? 0 : w, stretches(i + 1) ? 0 : w]
+    const bottom = breaks[i]
+    const top = breaks[i + 1]
+    return [
+      stretches(i - 1) || !crossed(bottom, bottom + w) ? 0 : w,
+      stretches(i + 1) || !crossed(top - w, top) ? 0 : w,
+    ]
   })
-  return { breaks, locked, ramps, lo, hi }
+  return { breaks, locked, flat, ramps, lo, hi }
 }
 
 /** Where the stretch changes character along this direction: band edges and the middles and ends of ramps. */
@@ -529,47 +570,57 @@ function levelsOf({ breaks, ramps }: Bands) {
 }
 
 /**
- * Vertical remap: lo–hi (baseline to cap height) grows to (hi − lo)·scale. Strokes and everything
- * outside lo–hi grow by `base` only (1 keeps their size); the open bands absorb the rest, easing in
- * over their ramps so the remap has no sudden change of rate. f(lo) = lo keeps the baseline put.
+ * Vertical remap: lo–hi (baseline to cap height) grows to (hi − lo)·scale. Straight horizontal
+ * strokes keep their size; curved stroke bands and everything outside lo–hi grow by `base`; the
+ * open bands absorb the rest, easing in from their neighbours' rate over their ramps so the remap
+ * has no sudden change of rate. f(lo) = lo keeps the baseline put.
  */
-function bandMap({ breaks, locked, ramps, lo, hi }: Bands, scale: number, base: number) {
+function bandMap({ breaks, locked, flat, ramps, lo, hi }: Bands, scale: number, base: number) {
   const uniform = { f: (v: number) => lo + (v - lo) * scale, slope: () => scale }
-  const stretches = (i: number) => i >= 0 && i < locked.length && breaks[i] >= lo && breaks[i + 1] <= hi && !locked[i]
-  let fixedLen = 0 // grows by `base`: strokes plus half of every ramp
-  let freeLen = 0 // grows at k
-  for (let i = 0; i < locked.length; i++) {
+  const n = locked.length
+  const stretches = (i: number) => i >= 0 && i < n && breaks[i] >= lo && breaks[i + 1] <= hi && !locked[i]
+  // growth rate of a band that doesn't stretch freely
+  const fixed = (i: number) => (i >= 0 && i < n && locked[i] && flat[i] && breaks[i] >= lo && breaks[i + 1] <= hi ? 1 : base)
+  const edgeRate = (i: number) => (stretches(i) ? NaN : fixed(i))
+
+  // total length = k · free + known, solved for k
+  let free = 0
+  let known = 0
+  for (let i = 0; i < n; i++) {
     if (breaks[i] < lo || breaks[i + 1] > hi) continue
     const len = breaks[i + 1] - breaks[i]
-    if (!stretches(i)) fixedLen += len
-    else {
-      const half = (ramps[i][0] + ramps[i][1]) / 2
-      fixedLen += half
-      freeLen += len - half
+    if (!stretches(i)) {
+      known += fixed(i) * len
+      continue
     }
+    const [l, r] = ramps[i]
+    free += len - l / 2 - r / 2
+    known += (l ? (edgeRate(i - 1) * l) / 2 : 0) + (r ? (edgeRate(i + 1) * r) / 2 : 0)
   }
-  if (freeLen < 1) return uniform
-  const k = Math.max(base, ((hi - lo) * scale - base * fixedLen) / freeLen)
+  if (free < 1) return uniform
+  const k = Math.max(base, ((hi - lo) * scale - known) / free)
 
   // growth rate d units into band i, and its integral
   const rate = (i: number, d: number) => {
-    if (!stretches(i)) return base
+    if (!stretches(i)) return fixed(i)
     const [l, r] = ramps[i]
     const len = breaks[i + 1] - breaks[i]
-    if (d < l) return base + ((k - base) * d) / l
-    if (d > len - r) return k - ((k - base) * (d - (len - r))) / r
+    if (d < l) return edgeRate(i - 1) + ((k - edgeRate(i - 1)) * d) / l
+    if (d > len - r) return k - ((k - edgeRate(i + 1)) * (d - (len - r))) / r
     return k
   }
   const integral = (i: number, d: number) => {
-    if (!stretches(i)) return base * d
+    if (!stretches(i)) return fixed(i) * d
     const [l, r] = ramps[i]
     const len = breaks[i + 1] - breaks[i]
     const a = Math.min(d, l)
-    let sum = base * a + (l ? ((k - base) * a * a) / (2 * l) : 0)
+    const r0 = l ? edgeRate(i - 1) : k
+    const r1 = r ? edgeRate(i + 1) : k
+    let sum = l ? r0 * a + ((k - r0) * a * a) / (2 * l) : 0
     if (d > l) sum += k * (Math.min(d, len - r) - l)
     if (d > len - r) {
       const t = d - (len - r)
-      sum += k * t - ((k - base) * t * t) / (2 * r)
+      sum += k * t - ((k - r1) * t * t) / (2 * r)
     }
     return sum
   }
