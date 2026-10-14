@@ -11,10 +11,22 @@
   </head>
   <body>
     <main class="app">
-      <div class="stage" id="stage"></div>
+      <div class="stage" id="stage">
+        <input class="word" id="word" type="text" aria-label="Word" placeholder="Type a word" spellcheck="false" autocomplete="off" autocapitalize="characters" />
+      </div>
 
       <aside class="panel">
         <div class="logo" id="logo" role="img" aria-label="Opera"></div>
+
+        <section>
+          <h2>Font</h2>
+          <div class="grid font-row">
+            <select class="tile select" id="font-select" aria-label="Font"></select>
+            <button class="tile" id="font-upload">Upload</button>
+            <input type="file" id="font-file" accept=".otf,.ttf,.woff" hidden />
+          </div>
+          <div class="sliders" id="weight-slider"></div>
+        </section>
 
         <section>
           <h2>Baseline</h2>
@@ -45,7 +57,7 @@
           </div>
         </section>
 
-        <footer class="hint">Type to edit · ⌘S to save PNG</footer>
+        <footer class="hint" id="hint" role="status">⌘S to save PNG</footer>
       </aside>
     </main>
     <script type="module" src="/src/main.ts"></script>

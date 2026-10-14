@@ -37,7 +37,10 @@ export interface State {
   maxHeight: number
   minItalic: number
   maxItalic: number
+  weight: number // applies to fonts with a weight axis; not touched by Reset Selection
   random: { height: number[]; italic: number[]; anchor: number[] }
+  // Where each letter has been dragged to, relative to its place in the word (in box heights)
+  offsets: { x: number; y: number }[]
 }
 
 export const state: State = {
@@ -46,10 +49,12 @@ export const state: State = {
   heightMode: null,
   italicMode: null,
   ...DEFAULTS,
+  weight: 400,
   random: { height: [], italic: [], anchor: [] },
+  offsets: [],
 }
 
-/** Per-letter targets: height 0–1, italic in degrees, anchor 0 (bottom) – 1 (top). */
+/** Per-letter targets: height 0–1, italic in degrees, anchor 0 (bottom) – 1 (top), drag offset. */
 export function target(i: number, n: number) {
   const s = state
   const t = n > 1 ? i / (n - 1) : 0.5
@@ -65,12 +70,14 @@ export function target(i: number, n: number) {
     height: (s.minHeight + (s.maxHeight - s.minHeight) * h) / 100,
     italic: s.minItalic + (s.maxItalic - s.minItalic) * it,
     anchor,
+    dx: s.offsets[i]?.x ?? 0,
+    dy: s.offsets[i]?.y ?? 0,
   }
 }
 
 const coin = () => (Math.random() < 0.5 ? 0 : 1)
 
-/** Keep the random arrays as long as the text, without rerolling existing letters. */
+/** Keep the per-letter arrays as long as the text, without rerolling existing letters. */
 export function fillRandom() {
   const r = state.random
   while (r.height.length < state.text.length) {
@@ -78,6 +85,21 @@ export function fillRandom() {
     r.italic.push(coin() * Math.random())
     r.anchor.push(coin())
   }
+  while (state.offsets.length < state.text.length) state.offsets.push({ x: 0, y: 0 })
+}
+
+/**
+ * Replaces `remove` characters at `index` with `insert`, moving the per-letter random values
+ * and drag offsets along so every letter keeps its own.
+ */
+export function spliceText(index: number, remove: number, insert: string) {
+  const s = state
+  const n = insert.length
+  s.text = s.text.slice(0, index) + insert + s.text.slice(index + remove)
+  s.random.height.splice(index, remove, ...Array.from({ length: n }, Math.random))
+  s.random.italic.splice(index, remove, ...Array.from({ length: n }, () => coin() * Math.random()))
+  s.random.anchor.splice(index, remove, ...Array.from({ length: n }, coin))
+  s.offsets.splice(index, remove, ...Array.from({ length: n }, () => ({ x: 0, y: 0 })))
 }
 
 export function randomizeHeight() {
@@ -94,6 +116,8 @@ export function randomizeEverything() {
   state.baseline = 'random'
 }
 
+/** Back to the starting look, including undoing any dragging. Keeps the text, font and weight. */
 export function reset() {
   Object.assign(state, DEFAULTS, { baseline: 'bottom', heightMode: null, italicMode: null })
+  state.offsets = state.offsets.map(() => ({ x: 0, y: 0 }))
 }

@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Locally licensed / trial fonts: served by `pnpm dev`, never committed or deployed
+public/fonts/local/

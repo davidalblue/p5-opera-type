@@ -24,7 +24,7 @@ body {
 body {
   display: flex;
   box-sizing: border-box;
-  padding: clamp(16px, 11vh, 112px) clamp(16px, 6vw, 92px);
+  padding: clamp(16px, 6vh, 112px) clamp(16px, 6vw, 92px);
 }
 
 .app {
@@ -46,6 +46,43 @@ body {
   position: absolute;
   inset: 0;
   display: block;
+  /* dragging letters shouldn't scroll or zoom the page on touch screens */
+  touch-action: none;
+}
+
+/* Word bar, floating at the bottom of the canvas */
+.word {
+  position: absolute;
+  z-index: 1;
+  left: 50%;
+  bottom: 22px;
+  box-sizing: border-box;
+  width: min(360px, calc(100% - 32px));
+  height: 41px;
+  padding: 0 18px;
+  transform: translateX(-50%);
+  border: 1px solid #333;
+  border-radius: var(--radius);
+  background: #161616;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-align: center;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.word::placeholder {
+  color: var(--muted);
+}
+
+.word:hover {
+  border-color: #474747;
+}
+
+.word:focus {
+  border-color: #7a7a7a;
 }
 
 /* Panel */
@@ -54,7 +91,7 @@ body {
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 25px;
+  gap: 20px;
   box-sizing: border-box;
   width: 310px;
   padding: 32px 16px 14px;
@@ -99,6 +136,10 @@ h2 {
   grid-template-columns: repeat(4, 1fr);
 }
 
+.font-row {
+  grid-template-columns: 1fr 72px;
+}
+
 .tile {
   display: grid;
   place-items: center;
@@ -117,6 +158,28 @@ h2 {
 
 .tile:hover {
   background: var(--tile-hover);
+}
+
+.select {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: 0 32px 0 14px;
+  appearance: none;
+  text-align: left;
+  text-overflow: ellipsis;
+  background: var(--tile)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%23f4f4f4' stroke-width='1.2'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E")
+    no-repeat right 14px center;
+}
+
+.select:hover {
+  background-color: var(--tile-hover);
+}
+
+.select:disabled {
+  cursor: progress;
+  opacity: 0.6;
 }
 
 .tile.is-active {
@@ -147,8 +210,8 @@ h2 {
 
 .sliders {
   display: grid;
-  gap: 14px;
-  margin-top: 22px;
+  gap: 12px;
+  margin-top: 18px;
 }
 
 .slider {
@@ -198,13 +261,27 @@ h2 {
   user-select: none;
 }
 
+.slider.is-disabled {
+  opacity: 0.4;
+}
+
+.slider.is-disabled .track {
+  cursor: default;
+  pointer-events: none;
+}
+
 .hint {
   margin-top: auto;
+  min-height: 1.4em;
   color: var(--muted);
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.04em;
   text-align: center;
+}
+
+.hint.is-error {
+  color: #ff9b8a;
 }
 
 /* Narrow screens: canvas on top, panel below */

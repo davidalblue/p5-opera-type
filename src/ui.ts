@@ -12,7 +12,8 @@ import {
   type ItalicMode,
 } from './state'
 
-type NumberKey = 'minHeight' | 'maxHeight' | 'minItalic' | 'maxItalic'
+type NumberKey = 'minHeight' | 'maxHeight' | 'minItalic' | 'maxItalic' | 'weight'
+type Range = [number, number]
 
 const HEIGHT_MODES: HeightMode[] = ['up', 'valley', 'easeUp', 'down', 'peak', 'easeDown']
 const ITALIC_MODES: ItalicMode[] = ['upright', 'italic', 'ramp', 'rampReverse']
@@ -21,6 +22,7 @@ const SVG = 'http://www.w3.org/2000/svg'
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!
 
 let onChange = () => {}
+let panelEngine: TypeEngine
 
 /** Wires up the control panel. `changed` runs after every edit to the shared state. */
 export function initPanel(engine: TypeEngine, changed: () => void) {
@@ -28,8 +30,6 @@ export function initPanel(engine: TypeEngine, changed: () => void) {
     changed()
     syncPanel()
   }
-
-  $('#logo').append(wordSvg(engine, logoLetters(), 180, 52, 3))
 
   for (const b of document.querySelectorAll<HTMLButtonElement>('[data-baseline]')) {
     button(b, () => (state.baseline = b.dataset.baseline as Baseline))
@@ -45,18 +45,31 @@ export function initPanel(engine: TypeEngine, changed: () => void) {
   const italicModes = $('#italic-modes')
   for (const mode of ITALIC_MODES) {
     const b = el('button', { class: 'tile', 'data-italic': mode, 'aria-label': `Italic: ${mode}` })
-    b.append(wordSvg(engine, italicIcon(mode), 54, 26, 1.9))
     italicModes.append(button(b, () => (state.italicMode = mode)))
   }
 
-  $('#height-sliders').append(slider('Min Height', 'minHeight', 100), slider('Max Height', 'maxHeight', 100))
-  $('#italic-sliders').append(slider('Min Italic', 'minItalic', MAX_ITALIC), slider('Max Italic', 'maxItalic', MAX_ITALIC))
+  const percent = (): Range => [0, 100]
+  const italic = (): Range => [0, MAX_ITALIC]
+  $('#weight-slider').append(slider('Weight', 'weight', () => panelEngine.weightRange))
+  $('#height-sliders').append(slider('Min Height', 'minHeight', percent), slider('Max Height', 'maxHeight', percent))
+  $('#italic-sliders').append(slider('Min Italic', 'minItalic', italic), slider('Max Italic', 'maxItalic', italic))
 
   button($('#randomize-all'), randomizeEverything)
   button($('#randomize-height'), randomizeHeight)
   button($('#reset'), reset)
 
+  setPanelFont(engine)
   syncPanel()
+}
+
+/** Redraws the parts of the panel that are set in the current font: the wordmark and italic icons. */
+export function setPanelFont(engine: TypeEngine) {
+  panelEngine = engine
+  const w = state.weight
+  $('#logo').replaceChildren(wordSvg(engine, logoLetters(), 180, 52, 3, w))
+  for (const b of document.querySelectorAll<HTMLElement>('[data-italic]')) {
+    b.replaceChildren(wordSvg(engine, italicIcon(engine, b.dataset.italic as ItalicMode), 54, 26, 1.9, w))
+  }
 }
 
 /** Reflects the state in the panel: selected buttons and slider positions. */
@@ -82,7 +95,8 @@ function button(b: HTMLElement, action: () => void) {
 
 type SliderEl = HTMLElement & { sync: () => void }
 
-function slider(label: string, key: NumberKey, max: number) {
+/** A slider over `range()`; it's disabled while `range()` is null (e.g. weight on a single-weight font). */
+function slider(label: string, key: NumberKey, range: () => Range | null) {
   const row = el('div', { class: 'slider' }) as SliderEl
   const track = el('div', { class: 'track', role: 'slider', tabindex: '0', 'aria-label': label })
   const thumb = el('div', { class: 'thumb' })
@@ -90,7 +104,9 @@ function slider(label: string, key: NumberKey, max: number) {
   row.append(el('span', { class: 'label' }, label), track)
 
   const set = (v: number) => {
-    v = Math.round(Math.min(max, Math.max(0, v)))
+    const r = range()
+    if (!r) return
+    v = Math.round(Math.min(r[1], Math.max(r[0], v)))
     // min can't pass max and vice versa
     if (key === 'minHeight') v = Math.min(v, state.maxHeight)
     if (key === 'maxHeight') v = Math.max(v, state.minHeight)
@@ -101,9 +117,11 @@ function slider(label: string, key: NumberKey, max: number) {
     onChange()
   }
   const fromPointer = (e: PointerEvent) => {
-    const r = track.getBoundingClientRect()
+    const r = range()
+    if (!r) return
+    const box = track.getBoundingClientRect()
     const w = thumb.offsetWidth
-    set(((e.clientX - r.left - w / 2) / (r.width - w)) * max)
+    set(r[0] + ((e.clientX - box.left - w / 2) / (box.width - w)) * (r[1] - r[0]))
   }
 
   track.addEventListener('pointerdown', (e) => {
@@ -114,7 +132,10 @@ function slider(label: string, key: NumberKey, max: number) {
     if (track.hasPointerCapture(e.pointerId)) fromPointer(e)
   })
   track.addEventListener('keydown', (e) => {
-    const step = e.shiftKey ? 10 : 1
+    const r = range()
+    if (!r) return
+    const unit = r[1] - r[0] > 200 ? 10 : 1
+    const step = e.shiftKey ? unit * 10 : unit
     const delta = { ArrowLeft: -step, ArrowDown: -step, ArrowRight: step, ArrowUp: step }[e.key]
     if (delta === undefined) return
     e.preventDefault()
@@ -122,11 +143,20 @@ function slider(label: string, key: NumberKey, max: number) {
   })
 
   row.sync = () => {
+    const r = range()
+    row.classList.toggle('is-disabled', !r)
+    track.tabIndex = r ? 0 : -1
+    track.setAttribute('aria-disabled', String(!r))
+    if (!r) {
+      thumb.textContent = '–'
+      thumb.style.left = '0px'
+      return
+    }
     const v = state[key]
     thumb.textContent = String(v)
-    thumb.style.left = `calc((100% - var(--thumb-w)) * ${v / max})`
-    track.setAttribute('aria-valuemin', '0')
-    track.setAttribute('aria-valuemax', String(max))
+    thumb.style.left = `calc((100% - var(--thumb-w)) * ${(v - r[0]) / (r[1] - r[0])})`
+    track.setAttribute('aria-valuemin', String(r[0]))
+    track.setAttribute('aria-valuemax', String(r[1]))
     track.setAttribute('aria-valuenow', String(v))
   }
   return row
@@ -148,11 +178,11 @@ function curveSvg(mode: HeightMode) {
 }
 
 /** Renders letters with the same engine as the canvas, as an inline SVG. */
-function wordSvg(engine: TypeEngine, letters: Letter[], w: number, h: number, maxStretch: number) {
+function wordSvg(engine: TypeEngine, letters: Letter[], w: number, h: number, maxStretch: number, weight: number) {
   const svg = document.createElementNS(SVG, 'svg')
   svg.setAttribute('viewBox', `0 0 ${w} ${h}`)
   svg.setAttribute('aria-hidden', 'true')
-  for (const d of layoutWord(engine, letters, { x: 0, y: 0, w, h }, maxStretch)) {
+  for (const d of layoutWord(engine, letters, { x: 0, y: 0, w, h }, maxStretch, weight).paths) {
     const path = document.createElementNS(SVG, 'path')
     path.setAttribute('d', d)
     svg.append(path)
@@ -160,9 +190,10 @@ function wordSvg(engine: TypeEngine, letters: Letter[], w: number, h: number, ma
   return svg
 }
 
-function italicIcon(mode: ItalicMode): Letter[] {
-  const A = (italic: number): Letter => ({ ch: 'A', height: 1, italic, anchor: 0 })
-  const dash: Letter = { ch: '–', height: 1, italic: 0, anchor: 0 }
+function italicIcon(engine: TypeEngine, mode: ItalicMode): Letter[] {
+  const A = (italic: number): Letter => ({ ch: 'A', height: 1, italic, anchor: 0, dx: 0, dy: 0 })
+  // not every font (e.g. trial cuts) has an en dash
+  const dash: Letter = { ch: ['–', '-'].find((c) => engine.has(c)) ?? ' ', height: 1, italic: 0, anchor: 0, dx: 0, dy: 0 }
   if (mode === 'upright') return [A(0)]
   if (mode === 'italic') return [A(32)]
   if (mode === 'ramp') return [A(0), dash, A(32)]
@@ -176,6 +207,8 @@ function logoLetters(): Letter[] {
     height: i === 0 || i === all.length - 1 ? 1 : 0,
     italic: 0,
     anchor: 1,
+    dx: 0,
+    dy: 0,
   }))
 }
 
