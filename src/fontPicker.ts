@@ -9,8 +9,10 @@ interface FontChoice {
 // The first font that loads is the default. Files in public/fonts/local/ are git-ignored, so they're
 // only there when running on this computer (trial fonts can't be published) — elsewhere they're skipped.
 export const FONTS: FontChoice[] = [
-  // GT Ultra variable font, with its contrast axis held at the Fine end
+  // GT Ultra variable font, with its contrast axis starting at the Fine end
   { name: 'GT Ultra Fine', file: 'local/GT-Ultra-Trial-VF.ttf', axes: { CNTR: 100 } },
+  // ABC Arizona superfamily: serif, width, weight and slant axes
+  { name: 'ABC Arizona', file: 'local/ABCArizonaSuperfamilyVariableTrial.ttf' },
   // Bundled, SIL Open Font License
   { name: 'Source Serif Display', file: 'SourceSerif4Display-Semibold.otf' },
   { name: 'Playfair Display', file: 'PlayfairDisplay.ttf' },

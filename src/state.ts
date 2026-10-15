@@ -39,6 +39,10 @@ export interface State {
   maxItalic: number
   weight: number // applies to fonts with a weight axis; not touched by Reset Selection
   stroke: number // 0–100: how much stems and curves thicken as letters grow (0 keeps the font's thickness)
+  // Font settings for variable fonts (not touched by Reset Selection): the font's own slant in
+  // degrees, applied to every letter on top of Modulate Italic, and its other axes (serif, width…)
+  slant: number
+  axes: Record<string, number>
   random: { height: number[]; italic: number[]; anchor: number[] }
   // Where each letter has been dragged to, relative to its place in the word (in box heights)
   offsets: { x: number; y: number }[]
@@ -52,6 +56,8 @@ export const state: State = {
   ...DEFAULTS,
   weight: 400,
   stroke: 100,
+  slant: 0,
+  axes: {},
   random: { height: [], italic: [], anchor: [] },
   offsets: [],
 }

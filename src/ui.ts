@@ -12,8 +12,21 @@ import {
   type ItalicMode,
 } from './state'
 
-type NumberKey = 'minHeight' | 'maxHeight' | 'minItalic' | 'maxItalic' | 'weight' | 'stroke'
+type NumberKey = 'minHeight' | 'maxHeight' | 'minItalic' | 'maxItalic' | 'stroke'
 type Range = [number, number]
+type Bind = { get(): number; set(v: number): void }
+
+// Friendly names for common variable font axes; others use the font's own axis name
+const AXIS_LABELS: Record<string, string> = {
+  SRFF: 'Serif',
+  wdth: 'Width',
+  wght: 'Weight',
+  slnt: 'Slant',
+  CNTR: 'Contrast',
+  opsz: 'Optical',
+  ital: 'Italic',
+}
+const AXIS_ORDER = ['SRFF', 'wdth', 'wght', 'slnt']
 
 const HEIGHT_MODES: HeightMode[] = ['up', 'valley', 'easeUp', 'down', 'peak', 'easeDown']
 const ITALIC_MODES: ItalicMode[] = ['upright', 'italic', 'ramp', 'rampReverse']
@@ -22,7 +35,6 @@ const SVG = 'http://www.w3.org/2000/svg'
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!
 
 let onChange = () => {}
-let panelEngine: TypeEngine
 
 /** Wires up the control panel. `changed` runs after every edit to the shared state. */
 export function initPanel(engine: TypeEngine, changed: () => void) {
@@ -50,12 +62,16 @@ export function initPanel(engine: TypeEngine, changed: () => void) {
 
   const percent = (): Range => [0, 100]
   const italic = (): Range => [0, MAX_ITALIC]
-  $('#weight-slider').append(
-    slider('Weight', 'weight', () => panelEngine.weightRange),
-    slider('Stroke', 'stroke', percent),
+  $('#stroke-slider').append(slider('Stroke', stateBind('stroke'), percent))
+  $('#height-sliders').append(
+    slider('Min Height', stateBind('minHeight'), percent),
+    slider('Max Height', stateBind('maxHeight'), percent),
   )
-  $('#height-sliders').append(slider('Min Height', 'minHeight', percent), slider('Max Height', 'maxHeight', percent))
-  $('#italic-sliders').append(slider('Min Italic', 'minItalic', italic), slider('Max Italic', 'maxItalic', italic))
+  $('#italic-sliders').append(
+    slider('Min Italic', stateBind('minItalic'), italic),
+    slider('Max Italic', stateBind('maxItalic'), italic),
+  )
+  buildFontAxes(engine)
 
   button($('#randomize-all'), randomizeEverything)
   button($('#randomize-height'), randomizeHeight)
@@ -65,9 +81,34 @@ export function initPanel(engine: TypeEngine, changed: () => void) {
   syncPanel()
 }
 
+/**
+ * One slider per axis of the current font (serif, width, weight, slant, contrast…), shown only for
+ * the axes it actually has. Weight and slant drive the whole tool; the rest go to the engine.
+ */
+export function buildFontAxes(engine: TypeEngine) {
+  const box = $('#font-axes')
+  box.replaceChildren()
+  const axes = [...engine.axisList].sort(
+    (a, b) => (AXIS_ORDER.indexOf(a.tag) + 1 || 99) - (AXIS_ORDER.indexOf(b.tag) + 1 || 99),
+  )
+  for (const a of axes) {
+    const label = AXIS_LABELS[a.tag] ?? a.name
+    if (a.tag === 'wght') {
+      box.append(slider(label, { get: () => state.weight, set: (v) => (state.weight = v) }, () => [a.min, a.max]))
+    } else if (a.tag === 'slnt') {
+      // shown as degrees of right lean, whichever sign the font uses
+      box.append(slider(label, { get: () => state.slant, set: (v) => (state.slant = v) }, () => [0, engine.maxSlant]))
+    } else {
+      const bind = { get: () => state.axes[a.tag] ?? a.default, set: (v: number) => (state.axes[a.tag] = v) }
+      box.append(slider(label, bind, () => [a.min, a.max]))
+    }
+  }
+  $('#axes-note').hidden = axes.length > 0
+  syncPanel()
+}
+
 /** Redraws the parts of the panel that are set in the current font: the wordmark and italic icons. */
 export function setPanelFont(engine: TypeEngine) {
-  panelEngine = engine
   const w = state.weight
   $('#logo').replaceChildren(wordSvg(engine, logoLetters(), 180, 52, 3, w))
   for (const b of document.querySelectorAll<HTMLElement>('[data-italic]')) {
@@ -98,8 +139,22 @@ function button(b: HTMLElement, action: () => void) {
 
 type SliderEl = HTMLElement & { sync: () => void }
 
-/** A slider over `range()`; it's disabled while `range()` is null (e.g. weight on a single-weight font). */
-function slider(label: string, key: NumberKey, range: () => Range | null) {
+/** Binds a slider to a number in the state, keeping min/max pairs from crossing. */
+function stateBind(key: NumberKey): Bind {
+  return {
+    get: () => state[key],
+    set: (v) => {
+      if (key === 'minHeight') v = Math.min(v, state.maxHeight)
+      if (key === 'maxHeight') v = Math.max(v, state.minHeight)
+      if (key === 'minItalic') v = Math.min(v, state.maxItalic)
+      if (key === 'maxItalic') v = Math.max(v, state.minItalic)
+      state[key] = v
+    },
+  }
+}
+
+/** A slider over `range()`; it's disabled while `range()` is null. */
+function slider(label: string, bind: Bind, range: () => Range | null) {
   const row = el('div', { class: 'slider' }) as SliderEl
   const track = el('div', { class: 'track', role: 'slider', tabindex: '0', 'aria-label': label })
   const thumb = el('div', { class: 'thumb' })
@@ -110,13 +165,8 @@ function slider(label: string, key: NumberKey, range: () => Range | null) {
     const r = range()
     if (!r) return
     v = Math.round(Math.min(r[1], Math.max(r[0], v)))
-    // min can't pass max and vice versa
-    if (key === 'minHeight') v = Math.min(v, state.maxHeight)
-    if (key === 'maxHeight') v = Math.max(v, state.minHeight)
-    if (key === 'minItalic') v = Math.min(v, state.maxItalic)
-    if (key === 'maxItalic') v = Math.max(v, state.minItalic)
-    if (v === state[key]) return
-    state[key] = v
+    if (v === bind.get()) return
+    bind.set(v)
     onChange()
   }
   const fromPointer = (e: PointerEvent) => {
@@ -142,7 +192,7 @@ function slider(label: string, key: NumberKey, range: () => Range | null) {
     const delta = { ArrowLeft: -step, ArrowDown: -step, ArrowRight: step, ArrowUp: step }[e.key]
     if (delta === undefined) return
     e.preventDefault()
-    set(state[key] + delta)
+    set(bind.get() + delta)
   })
 
   row.sync = () => {
@@ -155,9 +205,9 @@ function slider(label: string, key: NumberKey, range: () => Range | null) {
       thumb.style.left = '0px'
       return
     }
-    const v = state[key]
+    const v = Math.round(bind.get())
     thumb.textContent = String(v)
-    thumb.style.left = `calc((100% - var(--thumb-w)) * ${(v - r[0]) / (r[1] - r[0])})`
+    thumb.style.left = `calc((100% - var(--thumb-w)) * ${r[1] > r[0] ? (v - r[0]) / (r[1] - r[0]) : 0})`
     track.setAttribute('aria-valuemin', String(r[0]))
     track.setAttribute('aria-valuemax', String(r[1]))
     track.setAttribute('aria-valuenow', String(v))

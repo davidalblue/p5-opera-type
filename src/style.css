@@ -211,7 +211,7 @@ h2 {
 .sliders {
   display: grid;
   gap: 12px;
-  margin-top: 18px;
+  margin-top: 16px;
 }
 
 .slider {
@@ -259,6 +259,17 @@ h2 {
   text-align: center;
   font-variant-numeric: tabular-nums;
   user-select: none;
+}
+
+.note {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+#font-axes:empty {
+  display: none;
 }
 
 .slider.is-disabled {

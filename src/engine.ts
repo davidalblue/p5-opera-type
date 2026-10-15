@@ -104,7 +104,10 @@ const CACHE_LIMIT = 4000
 /** Values for a variable font's axes, by tag (wght, slnt, …). */
 export type AxisValues = Record<string, number>
 
-interface Axis {
+/** One of a variable font's axes. */
+export interface Axis {
+  tag: string
+  name: string
   min: number
   max: number
   default: number
@@ -130,14 +133,20 @@ export class TypeEngine {
   private font: Font
   private axes: Record<string, Axis>
   private pinned: AxisValues
+  // Values chosen for the font's other axes (serif, width, contrast…); weight and slant are passed per glyph
+  private settings: AxisValues = {}
 
   /** `pinned` fixes axes this family doesn't expose, e.g. { CNTR: 100 } for GT Ultra Fine. */
   private constructor(font: Font, pinned: AxisValues) {
     this.font = font
     this.pinned = pinned
-    const fvar = font.tables.fvar as { axes?: { tag: string; minValue: number; maxValue: number; defaultValue: number }[] } | undefined
+    type FvarAxis = { tag: string; name?: unknown; minValue: number; maxValue: number; defaultValue: number }
+    const fvar = font.tables.fvar as { axes?: FvarAxis[] } | undefined
     this.axes = Object.fromEntries(
-      (fvar?.axes ?? []).map((a) => [a.tag, { min: a.minValue, max: a.maxValue, default: a.defaultValue }]),
+      (fvar?.axes ?? []).map((a) => {
+        const name = typeof a.name === 'object' && a.name ? (a.name as { en?: string }).en : undefined
+        return [a.tag, { tag: a.tag, name: name ?? a.tag, min: a.minValue, max: a.maxValue, default: a.defaultValue }]
+      }),
     )
     this.capHeight = font.tables.os2?.sCapHeight || font.charToGlyph('H').getBoundingBox().y2
   }
@@ -177,6 +186,25 @@ export class TypeEngine {
     return a ? Math.max(Math.abs(a.min), Math.abs(a.max)) : 0
   }
 
+  /** The font's axes, with this family's pinned values as their defaults (e.g. GT Ultra Fine's contrast). */
+  get axisList(): Axis[] {
+    return Object.values(this.axes).map((a) => ({ ...a, default: this.pinned[a.tag] ?? a.default }))
+  }
+
+  /** Sets the font's other axes (anything but weight and slant). Glyphs are rebuilt as needed. */
+  setAxes(values: AxisValues) {
+    const next: AxisValues = {}
+    for (const [tag, v] of Object.entries(values)) {
+      const a = this.axes[tag]
+      if (a && tag !== 'wght' && tag !== 'slnt') next[tag] = Math.min(a.max, Math.max(a.min, v))
+    }
+    if (JSON.stringify(next) === JSON.stringify(this.settings)) return
+    this.settings = next
+    this.cache.clear()
+    this.strokes.clear()
+    this.stems = null
+  }
+
   /**
    * The glyph for `ch` at a weight and native slant (both ignored by static fonts).
    * Slanted outlines come back with the slant sheared out again, so stretching works on
@@ -184,7 +212,7 @@ export class TypeEngine {
    */
   glyph(ch: string, weight = 400, slant = 0): Glyph {
     const coords = this.coords(weight, slant)
-    const key = coords ? `${ch}|${coords.wght ?? ''}|${coords.slnt ?? ''}` : ch
+    const key = coords ? `${ch}|${Object.values(coords).join(',')}` : ch
     let g = this.cache.get(key)
     if (!g) {
       if (this.cache.size > CACHE_LIMIT) this.cache.clear()
@@ -240,7 +268,7 @@ export class TypeEngine {
     if (!Object.keys(this.axes).length) return null
     const c: AxisValues = {}
     for (const [tag, a] of Object.entries(this.axes)) c[tag] = a.default
-    Object.assign(c, this.pinned)
+    Object.assign(c, this.pinned, this.settings)
     const { wght, slnt } = this.axes
     if (wght) c.wght = Math.round(Math.min(wght.max, Math.max(wght.min, weight)))
     if (slnt) {
@@ -269,7 +297,7 @@ export class TypeEngine {
    * "I" and "H". Used to tell strokes (keep their thickness) from open space (stretches).
    */
   private strokeSizes(coords: AxisValues | null) {
-    const key = coords ? `${coords.wght ?? ''}|${coords.slnt ?? ''}` : ''
+    const key = coords ? Object.values(coords).join(',') : ''
     let sizes = this.strokes.get(key)
     if (!sizes) {
       const C = this.capHeight
@@ -447,6 +475,11 @@ export class TypeEngine {
   private variedAdvance(glyph: opentype.Glyph, coords: AxisValues) {
     const font = this.font as unknown as Variable
     const g = glyph as opentype.Glyph & { points?: Point[]; isComposite?: boolean; xMin?: number; leftSideBearing?: number }
+    // fonts with an HVAR table carry their varying advances; opentype.js applies it
+    if ((this.font.tables as { hvar?: unknown }).hvar) {
+      const v = this.font as unknown as { variation: { getTransform(g: opentype.Glyph, c: AxisValues): { advanceWidth?: number } } }
+      return v.variation.getTransform(glyph, coords).advanceWidth ?? glyph.advanceWidth ?? 0
+    }
     const data = font.tables.gvar?.glyphVariations[glyph.index]
     const advance = glyph.advanceWidth ?? 0
     if (!data || !g.points?.length || g.isComposite) return advance

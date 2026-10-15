@@ -4,7 +4,7 @@ import type { TypeEngine } from './engine'
 import { layoutWord, type Laid, type Letter } from './layout'
 import { fillRandom, spliceText, state, target } from './state'
 import { initFontPicker, loadDefaultFont } from './fontPicker'
-import { initPanel, setPanelFont, syncPanel } from './ui'
+import { buildFontAxes, initPanel, setPanelFont } from './ui'
 
 const MAX_LENGTH = 24
 // A full-height letter is this many times its resting cap height
@@ -20,7 +20,6 @@ loadDefaultFont().then(({ key, engine }) => start(key, engine))
 
 function start(initialKey: string, initial: TypeEngine) {
   let engine = initial
-  let weight = state.weight
   const stage = document.getElementById('stage')!
   const word = document.querySelector<HTMLInputElement>('#word')!
 
@@ -72,25 +71,33 @@ function start(initialKey: string, initial: TypeEngine) {
     if (e.key === 'Enter' || e.key === 'Escape') word.blur()
   })
 
-  // Keep the weight inside what the current font supports
-  const clampWeight = () => {
+  // A newly picked font starts from its own axis defaults; the weight is kept where the font allows
+  const adoptFont = () => {
     const range = engine.weightRange
     if (range) state.weight = Math.min(range[1], Math.max(range[0], state.weight))
+    state.slant = Math.min(state.slant, engine.maxSlant)
+    state.axes = {}
+    for (const a of engine.axisList) if (a.tag !== 'wght' && a.tag !== 'slnt') state.axes[a.tag] = a.default
+    engine.setAxes(state.axes)
   }
-  clampWeight()
+  adoptFont()
 
+  // the panel's wordmark and italic icons are set in the font, so redraw them when its look changes
+  const look = () => JSON.stringify([state.weight, state.axes])
+  let drawnLook = look()
   initPanel(engine, () => {
-    if (state.weight !== weight) {
-      weight = state.weight
+    engine.setAxes(state.axes)
+    if (look() !== drawnLook) {
+      drawnLook = look()
       setPanelFont(engine)
     }
   })
   initFontPicker(initialKey, engine, (picked) => {
     engine = picked
-    clampWeight()
-    weight = state.weight
+    adoptFont()
+    drawnLook = look()
     setPanelFont(picked)
-    syncPanel()
+    buildFontAxes(picked)
   })
 
   new p5((p: p5) => {
@@ -121,7 +128,7 @@ function start(initialKey: string, initial: TypeEngine) {
       const ctx = p.drawingContext as CanvasRenderingContext2D
       ctx.fillStyle = '#fff'
       const box = { x: p.width * 0.06, y: p.height * 0.22, w: p.width * 0.88, h: p.height * 0.51 }
-      laid = layoutWord(engine, letters, box, MAX_STRETCH, state.weight, state.stroke / 100)
+      laid = layoutWord(engine, letters, box, MAX_STRETCH, state.weight, state.stroke / 100, state.slant)
       shapes = laid.paths.map((d) => new Path2D(d))
       // the letter being dragged is drawn on top
       const order = shapes.map((_, i) => i)

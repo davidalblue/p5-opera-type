@@ -48,7 +48,8 @@ export function stretchFor(height: number, maxStretch: number, growth = 0): Stre
  * Lays out a word inside `box`: the top and bottom of the box are the two lines letters
  * hang from or sit on, and a full-height letter spans the whole box. The word is centred
  * and shrunk to fit if it is too wide. `weight` only affects fonts with a weight axis; `growth` is
- * how much strokes thicken as letters grow (see stretchFor).
+ * how much strokes thicken as letters grow (see stretchFor); `slant` (degrees) leans every letter
+ * on top of its own italic.
  *
  * Letters keep the font's spacing unless their stretched, slanted shapes would come closer
  * than MIN_GAP at some height, in which case the later letter is pushed right just enough.
@@ -60,6 +61,7 @@ export function layoutWord(
   maxStretch: number,
   weight = 400,
   growth = 0,
+  slant = 0,
 ): Laid {
   const C = engine.capHeight
   const unit = box.h / maxStretch / C
@@ -77,13 +79,14 @@ export function layoutWord(
     // lighter weight whose stems end up as thick as they should be (fonts with a weight axis only)
     const drawn = engine.weightFor(weight, stretch.w / stretch.sx)
     // the font's own slant axis covers what it can; the rest is a geometric shear
-    const g = engine.glyph(l.ch, drawn, Math.min(l.italic, engine.maxSlant))
+    const italic = l.italic + slant
+    const g = engine.glyph(l.ch, drawn, Math.min(italic, engine.maxSlant))
     const capPx = C * stretch.sy * unit
     const at = {
       x: 0,
       baseline: box.h + (capPx - box.h) * l.anchor,
       pivot: box.h * (1 - l.anchor),
-      slant: Math.tan((l.italic * Math.PI) / 180),
+      slant: Math.tan((italic * Math.PI) / 180),
       scale: unit,
     }
     const advance = engine.advance(g, stretch) * unit
