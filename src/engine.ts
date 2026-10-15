@@ -1,4 +1,5 @@
 import { parse, type Font } from 'opentype.js'
+import { readPairKerning, type PairKerning } from './kerning'
 import type opentype from 'opentype.js'
 
 // Glyph outlines in font units, y pointing up, baseline at 0
@@ -135,6 +136,8 @@ export class TypeEngine {
   private font: Font
   private axes: Record<string, Axis>
   private pinned: AxisValues
+  // the font's pair kerning, read directly (opentype.js misses most modern fonts' kerning)
+  private pairKerning: PairKerning | null = null
   // Values chosen for the font's other axes (serif, width, contrast…); weight and slant are passed per glyph
   private settings: AxisValues = {}
 
@@ -162,6 +165,7 @@ export class TypeEngine {
   /** Parses .otf, .ttf or .woff data (opentype.js can't read .woff2). */
   static fromBuffer(data: ArrayBuffer, pinned: AxisValues = {}) {
     const engine = new TypeEngine(parse(data), pinned)
+    engine.pairKerning = readPairKerning(data)
     if (!engine.has('A')) throw new Error('This font has no Latin capitals')
     return engine
   }
@@ -276,7 +280,10 @@ export class TypeEngine {
   }
 
   kerning(a: string, b: string) {
-    return this.font.getKerningValue(this.font.charToGlyph(a), this.font.charToGlyph(b))
+    const left = this.font.charToGlyph(a)
+    const right = this.font.charToGlyph(b)
+    const own = this.pairKerning?.(left.index, right.index) ?? 0
+    return own || this.font.getKerningValue(left, right)
   }
 
   private coords(weight: number, slant: number, overrides: AxisValues = {}): AxisValues | null {

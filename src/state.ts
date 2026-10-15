@@ -30,7 +30,7 @@ export const MAX_ITALIC = 40
 export interface State {
   text: string
   // 'random' and null mean no button is selected: random values per letter, or the minimum
-  baseline: Baseline | 'random'
+  baseline: Baseline // only changed by the Bottom/Top buttons
   heightMode: HeightMode | 'random' | null
   italicMode: ItalicMode | 'random' | null
   minHeight: number
@@ -43,7 +43,7 @@ export interface State {
   // degrees, applied to every letter on top of Modulate Italic, and its other axes (serif, width…)
   slant: number
   axes: Record<string, number>
-  random: { height: number[]; italic: number[]; anchor: number[] }
+  random: { height: number[]; italic: number[] }
   // Where each letter has been dragged to, relative to its place in the word (in box heights)
   offsets: { x: number; y: number }[]
 }
@@ -58,7 +58,7 @@ export const state: State = {
   stroke: 100,
   slant: 0,
   axes: {},
-  random: { height: [], italic: [], anchor: [] },
+  random: { height: [], italic: [] },
   offsets: [],
 }
 
@@ -72,7 +72,7 @@ export function target(i: number, n: number) {
     s.heightMode === 'random' ? s.random.height[i] : s.heightMode ? HEIGHT_CURVES[s.heightMode](t, c) : 0
   const it =
     s.italicMode === 'random' ? s.random.italic[i] : s.italicMode ? ITALIC_CURVES[s.italicMode](t) : 0
-  const anchor = s.baseline === 'random' ? s.random.anchor[i] : s.baseline === 'top' ? 1 : 0
+  const anchor = s.baseline === 'top' ? 1 : 0
 
   return {
     height: (s.minHeight + (s.maxHeight - s.minHeight) * h) / 100,
@@ -91,7 +91,6 @@ export function fillRandom() {
   while (r.height.length < state.text.length) {
     r.height.push(Math.random())
     r.italic.push(coin() * Math.random())
-    r.anchor.push(coin())
   }
   while (state.offsets.length < state.text.length) state.offsets.push({ x: 0, y: 0 })
 }
@@ -106,7 +105,6 @@ export function spliceText(index: number, remove: number, insert: string) {
   s.text = s.text.slice(0, index) + insert + s.text.slice(index + remove)
   s.random.height.splice(index, remove, ...Array.from({ length: n }, Math.random))
   s.random.italic.splice(index, remove, ...Array.from({ length: n }, () => coin() * Math.random()))
-  s.random.anchor.splice(index, remove, ...Array.from({ length: n }, coin))
   s.offsets.splice(index, remove, ...Array.from({ length: n }, () => ({ x: 0, y: 0 })))
 }
 
@@ -117,15 +115,14 @@ export function randomizeHeight() {
 }
 
 export function randomizeEverything() {
-  state.random = { height: [], italic: [], anchor: [] }
+  state.random = { height: [], italic: [] }
   fillRandom()
   state.heightMode = 'random'
   state.italicMode = 'random'
-  state.baseline = 'random'
 }
 
-/** Back to the starting look, including undoing any dragging. Keeps the text, font and weight. */
+/** Back to the starting look, including undoing any dragging. Keeps the text, font, weight and baseline. */
 export function reset() {
-  Object.assign(state, DEFAULTS, { baseline: 'bottom', heightMode: null, italicMode: null })
+  Object.assign(state, DEFAULTS, { heightMode: null, italicMode: null })
   state.offsets = state.offsets.map(() => ({ x: 0, y: 0 }))
 }
