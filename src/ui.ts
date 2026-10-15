@@ -98,6 +98,13 @@ export function buildFontAxes(engine: TypeEngine) {
     } else if (a.tag === 'slnt') {
       // shown as degrees of right lean, whichever sign the font uses
       box.append(slider(label, { get: () => state.slant, set: (v) => (state.slant = v) }, () => [0, engine.maxSlant]))
+    } else if (a.tag === 'wdth') {
+      // While letters are stretched the width follows their height (tall letters use the font's
+      // condensed drawings), so the slider only sets the resting width, after Reset Selection
+      const bind = { get: () => state.axes[a.tag] ?? a.default, set: (v: number) => (state.axes[a.tag] = v) }
+      const row = slider(label, bind, () => (stretched() ? null : [a.min, a.max]), 'Auto')
+      row.title = 'Set by the stretch while letters are modulated. Reset Selection to choose the resting width.'
+      box.append(row)
     } else {
       const bind = { get: () => state.axes[a.tag] ?? a.default, set: (v: number) => (state.axes[a.tag] = v) }
       box.append(slider(label, bind, () => [a.min, a.max]))
@@ -139,6 +146,9 @@ function button(b: HTMLElement, action: () => void) {
 
 type SliderEl = HTMLElement & { sync: () => void }
 
+/** Whether any letter is stretched: a height curve or random heights are on, or the minimum height is raised. */
+const stretched = () => state.heightMode !== null || state.minHeight > 0
+
 /** Binds a slider to a number in the state, keeping min/max pairs from crossing. */
 function stateBind(key: NumberKey): Bind {
   return {
@@ -153,8 +163,8 @@ function stateBind(key: NumberKey): Bind {
   }
 }
 
-/** A slider over `range()`; it's disabled while `range()` is null. */
-function slider(label: string, bind: Bind, range: () => Range | null) {
+/** A slider over `range()`; it's disabled (showing `disabledText`) while `range()` is null. */
+function slider(label: string, bind: Bind, range: () => Range | null, disabledText = '–') {
   const row = el('div', { class: 'slider' }) as SliderEl
   const track = el('div', { class: 'track', role: 'slider', tabindex: '0', 'aria-label': label })
   const thumb = el('div', { class: 'thumb' })
@@ -201,7 +211,7 @@ function slider(label: string, bind: Bind, range: () => Range | null) {
     track.tabIndex = r ? 0 : -1
     track.setAttribute('aria-disabled', String(!r))
     if (!r) {
-      thumb.textContent = '–'
+      thumb.textContent = disabledText
       thumb.style.left = '0px'
       return
     }

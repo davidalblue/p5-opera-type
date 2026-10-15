@@ -98,6 +98,8 @@ const MIN_FLAT = 0.05
 // Distance over which the stretch eases in next to a straight horizontal stroke, as a share of the
 // cap height. Just enough to keep curves smooth there; longer would flatten bowls next to it.
 const EASE_IN = 0.06
+// How far towards the font's narrowest width full-height letters go (0.5: halfway, Normal → Condensed)
+const WIDTH_REACH = 0.5
 // Glyph cache entries kept before the cache is cleared (variable fonts add an entry per weight/slant)
 const CACHE_LIMIT = 4000
 
@@ -191,6 +193,19 @@ export class TypeEngine {
     return Object.values(this.axes).map((a) => ({ ...a, default: this.pinned[a.tag] ?? a.default }))
   }
 
+  /**
+   * The width a letter `height` (0–1) of the way to full height is drawn at: from the width set for
+   * the font at rest, narrowing halfway towards the font's narrowest design at full height (for ABC
+   * Arizona: Normal 100 → Condensed 75). Null for fonts without a width axis.
+   */
+  widthFor(height: number): number | null {
+    const a = this.axes.wdth
+    if (!a) return null
+    const base = this.settings.wdth ?? this.pinned.wdth ?? a.default
+    const narrowest = base + (a.min - base) * WIDTH_REACH
+    return base + (narrowest - base) * Math.min(1, Math.max(0, height))
+  }
+
   /** Sets the font's other axes (anything but weight and slant). Glyphs are rebuilt as needed. */
   setAxes(values: AxisValues) {
     const next: AxisValues = {}
@@ -210,8 +225,8 @@ export class TypeEngine {
    * Slanted outlines come back with the slant sheared out again, so stretching works on
    * upright shapes and the caller applies the whole italic angle itself.
    */
-  glyph(ch: string, weight = 400, slant = 0): Glyph {
-    const coords = this.coords(weight, slant)
+  glyph(ch: string, weight = 400, slant = 0, overrides: AxisValues = {}): Glyph {
+    const coords = this.coords(weight, slant, overrides)
     const key = coords ? `${ch}|${Object.values(coords).join(',')}` : ch
     let g = this.cache.get(key)
     if (!g) {
@@ -264,11 +279,16 @@ export class TypeEngine {
     return this.font.getKerningValue(this.font.charToGlyph(a), this.font.charToGlyph(b))
   }
 
-  private coords(weight: number, slant: number): AxisValues | null {
+  private coords(weight: number, slant: number, overrides: AxisValues = {}): AxisValues | null {
     if (!Object.keys(this.axes).length) return null
     const c: AxisValues = {}
     for (const [tag, a] of Object.entries(this.axes)) c[tag] = a.default
     Object.assign(c, this.pinned, this.settings)
+    // per-glyph values (e.g. width), rounded to keep the glyph cache small
+    for (const [tag, v] of Object.entries(overrides)) {
+      const a = this.axes[tag]
+      if (a) c[tag] = Math.round(Math.min(a.max, Math.max(a.min, v)) * 2) / 2
+    }
     const { wght, slnt } = this.axes
     if (wght) c.wght = Math.round(Math.min(wght.max, Math.max(wght.min, weight)))
     if (slnt) {

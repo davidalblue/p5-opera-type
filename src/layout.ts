@@ -29,6 +29,9 @@ export interface Laid {
 // Minimum gap kept between neighbouring letters, as a share of the resting cap height
 // (scaled up with the letters' width so tall letters get a proportionally larger gap)
 const MIN_GAP = 0.08
+// For fonts drawn at their own condensed widths, how much of the usual widening tall letters still
+// get (as a power: 0 none, 1 all of it)
+const DESIGNED_WIDEN = 0.5
 // Resolution of the collision check between neighbours
 const ROWS = 120
 
@@ -37,11 +40,15 @@ const ROWS = 120
  * as wide, which gives tall letters their condensed look. `growth` (0–1) is how much its strokes
  * thicken along with it: 0 keeps the font's own stroke thickness, 1 lets strokes grow as much as
  * the letter widens (like the reference). Straight horizontal strokes keep their thickness either way.
+ *
+ * With `designedWidth` (fonts with a width axis) tall letters use the font's own condensed drawings
+ * (see TypeEngine.widthFor) and are only widened part of the way (DESIGNED_WIDEN), which keeps
+ * them full rather than slender while their shapes stay the font's own.
  */
-export function stretchFor(height: number, maxStretch: number, growth = 0): Stretch {
+export function stretchFor(height: number, maxStretch: number, growth = 0, designedWidth = false): Stretch {
   const sy = 1 + (maxStretch - 1) * height
-  const sx = sy ** 0.55
-  return { sx, sy, w: 1 + (sx - 1) * growth }
+  const widen = sy ** 0.55
+  return { sx: designedWidth ? widen ** DESIGNED_WIDEN : widen, sy, w: 1 + (widen - 1) * growth }
 }
 
 /**
@@ -74,13 +81,15 @@ export function layoutWord(
   let maxX = -Infinity
   let prevSx = 0
   const placed = letters.map((l, i) => {
-    const stretch = stretchFor(l.height, maxStretch, growth)
-    // Stretching sx times wider would make stems sx times thicker, so take the letter from the
-    // lighter weight whose stems end up as thick as they should be (fonts with a weight axis only)
+    const width = engine.widthFor(l.height)
+    const stretch = stretchFor(l.height, maxStretch, growth, width !== null)
+    // Stems should end up w times as thick as the font's: draw the letter from the weight that
+    // gets them there after it's widened sx times — lighter when widened geometrically, heavier
+    // when strokes should grow but the font's own narrower width is used (weight axis only)
     const drawn = engine.weightFor(weight, stretch.w / stretch.sx)
     // the font's own slant axis covers what it can; the rest is a geometric shear
     const italic = l.italic + slant
-    const g = engine.glyph(l.ch, drawn, Math.min(italic, engine.maxSlant))
+    const g = engine.glyph(l.ch, drawn, Math.min(italic, engine.maxSlant), width === null ? {} : { wdth: width })
     const capPx = C * stretch.sy * unit
     const at = {
       x: 0,
@@ -110,7 +119,7 @@ export function layoutWord(
     x += advance
     const next = letters[i + 1]
     if (next) {
-      const sx = (stretch.sx + stretchFor(next.height, maxStretch, growth).sx) / 2
+      const sx = (stretch.sx + stretchFor(next.height, maxStretch, growth, width !== null).sx) / 2
       x += engine.kerning(l.ch, next.ch) * unit * sx
     }
     prevSx = stretch.sx
