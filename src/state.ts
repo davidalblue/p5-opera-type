@@ -27,7 +27,10 @@ export const ITALIC_CURVES: Record<ItalicMode, (t: number) => number> = {
 export const DEFAULTS = { minHeight: 0, maxHeight: 100, minItalic: 0, maxItalic: 40 }
 export const MAX_ITALIC = 40
 
+export type Tool = 'stretch' | 'stave'
+
 export interface State {
+  tool: Tool // which tool is showing
   text: string
   // 'random' and null mean no button is selected: random values per letter, or the minimum
   baseline: Baseline // only changed by the Bottom/Top buttons
@@ -51,6 +54,7 @@ export interface State {
 }
 
 export const state: State = {
+  tool: location.hash === '#stave' ? 'stave' : 'stretch',
   text: 'OPERA',
   baseline: 'bottom',
   heightMode: null,

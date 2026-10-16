@@ -18,6 +18,11 @@
       <aside class="panel">
         <div class="logo" id="logo" role="img" aria-label="Opera"></div>
 
+        <div class="grid cols-2" role="tablist" aria-label="Tool">
+          <button class="tile" role="tab" data-tool-tab="stretch">Stretch</button>
+          <button class="tile" role="tab" data-tool-tab="stave">Stave</button>
+        </div>
+
         <section>
           <h2>Font</h2>
           <div class="grid font-row">
@@ -31,6 +36,7 @@
           <div class="sliders" id="stroke-slider"></div>
         </section>
 
+        <div class="tool" data-tool="stretch">
         <section>
           <h2>Baseline</h2>
           <div class="grid cols-2">
@@ -58,7 +64,40 @@
             <button class="tile" id="randomize-height">Randomize Height</button>
             <button class="tile" id="reset">Reset Selection</button>
           </div>
-        </section>ff
+        </section>
+        </div>
+
+        <div class="tool" data-tool="stave" hidden>
+          <section>
+            <h2>Melody</h2>
+            <div class="grid cols-4" id="stave-melody"></div>
+            <div class="sliders" id="stave-melody-sliders"></div>
+          </section>
+
+          <section>
+            <h2>Rhythm</h2>
+            <div class="sliders" id="stave-rhythm"></div>
+          </section>
+
+          <section>
+            <h2>Motion</h2>
+            <div class="sliders" id="stave-motion"></div>
+          </section>
+
+          <section>
+            <h2>Stave</h2>
+            <div class="sliders" id="stave-layout"></div>
+            <button class="tile toggle" id="stave-lines" aria-pressed="true">Stave Lines</button>
+          </section>
+
+          <section>
+            <h2>Quick Actions</h2>
+            <div class="grid cols-2">
+              <button class="tile" id="stave-new">New Melody</button>
+              <button class="tile" id="stave-play">Pause</button>
+            </div>
+          </section>
+        </div>
 
         <footer class="hint" id="hint" role="status">⌘S to save PNG</footer>
       </aside>

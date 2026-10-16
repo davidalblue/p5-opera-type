@@ -4,7 +4,9 @@ import type { TypeEngine } from './engine'
 import { layoutWord, type Laid, type Letter } from './layout'
 import { fillRandom, spliceText, state, target } from './state'
 import { initFontPicker, loadDefaultFont } from './fontPicker'
-import { buildFontAxes, initPanel, setPanelFont } from './ui'
+import { buildFontAxes, initPanel, setPanelFont, syncPanel } from './ui'
+import { drawStave, stave } from './stave'
+import { initStavePanel } from './staveUi'
 
 const MAX_LENGTH = 24
 // A full-height letter is this many times its resting cap height
@@ -92,6 +94,8 @@ function start(initialKey: string, initial: TypeEngine) {
       setPanelFont(engine)
     }
   })
+  initStavePanel()
+  syncPanel()
   initFontPicker(initialKey, engine, (picked) => {
     engine = picked
     adoptFont()
@@ -111,7 +115,21 @@ function start(initialKey: string, initial: TypeEngine) {
       stage.addEventListener('pointercancel', () => (drag = null))
     }
 
+    // the Stave tool's clock, which only runs while it's playing
+    let staveTime = 0
+
     p.draw = () => {
+      if (state.tool === 'stave') {
+        if (stave.playing) staveTime += p.deltaTime / 1000
+        p.background(0)
+        drawStave(p.drawingContext as CanvasRenderingContext2D, engine, p.width, p.height, staveTime)
+        if (saveNextFrame) {
+          saveNextFrame = false
+          p.saveCanvas(state.text.trim() || 'type', 'png')
+        }
+        return
+      }
+
       const k = 1 - Math.exp(-p.deltaTime / EASE_MS)
       letters.forEach((l, i) => {
         const t = target(i, letters.length)
@@ -192,6 +210,8 @@ function start(initialKey: string, initial: TypeEngine) {
   // Pressing a letter and moving drags it; pressing without moving places the caret there.
   // Pressing empty canvas stops editing.
   function onPointerDown(e: PointerEvent) {
+    // editing and dragging on the canvas belong to the Stretch tool
+    if (state.tool !== 'stretch') return
     if (e.target === word) return
     word.blur()
     const { x, y } = local(e)
@@ -206,6 +226,10 @@ function start(initialKey: string, initial: TypeEngine) {
   }
 
   function onPointerMove(e: PointerEvent) {
+    if (state.tool !== 'stretch') {
+      stage.style.cursor = ''
+      return
+    }
     if (e.target === word) return
     if (!drag) {
       const { x, y } = local(e)

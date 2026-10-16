@@ -10,11 +10,12 @@ import {
   type Baseline,
   type HeightMode,
   type ItalicMode,
+  type Tool,
 } from './state'
 
 type NumberKey = 'minHeight' | 'maxHeight' | 'minItalic' | 'maxItalic' | 'stroke'
 type Range = [number, number]
-type Bind = { get(): number; set(v: number): void }
+export type Bind = { get(): number; set(v: number): void }
 
 // Friendly names for common variable font axes; others use the font's own axis name
 const AXIS_LABELS: Record<string, string> = {
@@ -35,6 +36,11 @@ const SVG = 'http://www.w3.org/2000/svg'
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!
 
 let onChange = () => {}
+// extra panel parts (another tool's controls) that redraw their state on every sync
+const syncs: (() => void)[] = []
+// whether the current font has a weight axis (for showing "Bolder when stretched")
+let hasWeight = false
+export const addSync = (fn: () => void) => syncs.push(fn)
 
 /** Wires up the control panel. `changed` runs after every edit to the shared state. */
 export function initPanel(engine: TypeEngine, changed: () => void) {
@@ -73,6 +79,12 @@ export function initPanel(engine: TypeEngine, changed: () => void) {
   )
   buildFontAxes(engine)
 
+  for (const b of document.querySelectorAll<HTMLButtonElement>('[data-tool-tab]')) {
+    button(b, () => {
+      state.tool = b.dataset.toolTab as Tool
+      history.replaceState(null, '', state.tool === 'stave' ? '#stave' : location.pathname + location.search)
+    })
+  }
   button($('#auto-weight'), () => (state.autoWeight = !state.autoWeight))
   button($('#randomize-all'), randomizeEverything)
   button($('#randomize-height'), randomizeHeight)
@@ -96,7 +108,8 @@ export function buildFontAxes(engine: TypeEngine) {
     const label = AXIS_LABELS[a.tag] ?? a.name
     if (a.tag === 'wght') {
       // with "Bolder when stretched" on, each letter's weight follows its height instead
-      const row = slider(label, { get: () => state.weight, set: (v) => (state.weight = v) }, () => (state.autoWeight ? null : [a.min, a.max]), 'Auto')
+      const locked = () => state.autoWeight && state.tool === 'stretch'
+      const row = slider(label, { get: () => state.weight, set: (v) => (state.weight = v) }, () => (locked() ? null : [a.min, a.max]), 'Auto')
       row.title = 'Set by the stretch while "Bolder when stretched" is on'
       box.append(row)
     } else if (a.tag === 'slnt') {
@@ -115,7 +128,7 @@ export function buildFontAxes(engine: TypeEngine) {
     }
   }
   $('#axes-note').hidden = axes.length > 0
-  $('#auto-weight').hidden = !engine.weightRange
+  hasWeight = !!engine.weightRange
   syncPanel()
 }
 
@@ -137,11 +150,18 @@ export function syncPanel() {
   active('[data-height]', (b) => b.dataset.height === state.heightMode)
   active('[data-italic]', (b) => b.dataset.italic === state.italicMode)
   active('#auto-weight', () => state.autoWeight)
+  active('[data-tool-tab]', (b) => b.dataset.toolTab === state.tool)
+  for (const b of document.querySelectorAll<HTMLElement>('[data-tool-tab]')) b.setAttribute('aria-selected', String(b.dataset.toolTab === state.tool))
+  for (const t of document.querySelectorAll<HTMLElement>('[data-tool]')) t.hidden = t.dataset.tool !== state.tool
+  // Stroke and "Bolder when stretched" only shape stretched letters
+  $('#auto-weight').hidden = !hasWeight || state.tool !== 'stretch'
+  $('#stroke-slider').hidden = state.tool !== 'stretch'
+  syncs.forEach((fn) => fn())
   $('#auto-weight').setAttribute('aria-pressed', String(state.autoWeight))
   for (const s of document.querySelectorAll<HTMLElement>('.slider')) (s as SliderEl).sync()
 }
 
-function button(b: HTMLElement, action: () => void) {
+export function button(b: HTMLElement, action: () => void) {
   b.addEventListener('click', (e) => {
     action()
     onChange()
@@ -171,7 +191,7 @@ function stateBind(key: NumberKey): Bind {
 }
 
 /** A slider over `range()`; it's disabled (showing `disabledText`) while `range()` is null. */
-function slider(label: string, bind: Bind, range: () => Range | null, disabledText = '–') {
+export function slider(label: string, bind: Bind, range: () => Range | null, disabledText = '–') {
   const row = el('div', { class: 'slider' }) as SliderEl
   const track = el('div', { class: 'track', role: 'slider', tabindex: '0', 'aria-label': label })
   const thumb = el('div', { class: 'thumb' })
