@@ -1,4 +1,5 @@
 import type { AxisValues, Glyph, TypeEngine } from './engine'
+import { easeInOut, loopRate, loopStretch, snapEase, type LoopMode } from './loops'
 import { state } from './state'
 
 /**
@@ -30,9 +31,53 @@ export const stave = {
   reach: 100, // 0–100: how far towards its new note the letter stretches before letting go
   hold: 30, // 0–100: how long it stays stretched before snapping back
   snap: 40, // 0–100: from a smooth settle to an elastic snap
+  stick: 0, // 0–100: how close each letter settles to the letters beside it
+  // Animate Height: while one is on, the melody stops and the letters stretch up from the bottom
+  // line in a loop, like Warp
+  loop: null as LoopMode | null,
+  loopSpeed: 50, // 0–100
+  loopHeight: 50, // 0–100: how far up the stave the letters stretch at the loop's peak
+  loopTime: 0, // seconds since the loop was switched on (only while playing)
+  loopPhase: 0, // how far the loop has run, in cycles
   lines: true,
-  playing: true,
+  playing: false, // starts paused, with every letter on the bottom line, until Play is pressed
+  time: 0, // seconds of music played so far
   seed: 1,
+}
+
+/** Back to the start: every letter waits on the bottom line until Play is pressed again. */
+export function resetStave() {
+  stave.time = 0
+  stave.loopTime = 0
+  stave.loopPhase = 0
+  stave.playing = false
+}
+
+/**
+ * Switches an Animate Height loop on (from its start) or, pressed again, off. Off, the melody starts
+ * again from the bottom line, so the letters hop up into it rather than jumping.
+ */
+export function toggleLoop(mode: LoopMode) {
+  if (stave.loop === mode) {
+    stave.loop = null
+    stave.time = 0
+    return
+  }
+  if (!stave.loop) stave.loopTime = 0
+  stave.loop = mode
+  stave.loopPhase = 0
+}
+
+/** Moves the Stave on by `seconds` of play: the melody, or while a loop is on, only the loop. */
+export function advanceStave(seconds: number) {
+  if (!stave.playing) return
+  if (!stave.loop) {
+    stave.time += seconds
+    return
+  }
+  stave.loopTime += seconds
+  // the loop starts once the letters have settled on the bottom line
+  if (stave.loopTime > SETTLE) stave.loopPhase += seconds * loopRate(stave.loopSpeed)
 }
 
 /** New random choices for the melody and rhythm. */
@@ -54,6 +99,10 @@ const LAND = 0.14
 const REACH = 0.16
 const MAX_HOLD = 0.4
 const RELEASE = 0.16
+// Most a loop stretches a letter (Height at 100), in stave steps above its notehead: the whole stave
+const MAX_LOOP_STEPS = 8
+// Seconds the letters take to snap down onto the bottom line when a loop is switched on
+const SETTLE = 0.25
 // Most extra space between letters (Spacing at 100), as a share of the notehead height
 const MAX_TRACKING = 1.5
 
@@ -132,13 +181,55 @@ function next(i: number, note: Note): Note {
   return note.index < bar.length - 1 ? bar[note.index + 1] : barNotes(i, note.bar + 1)[0]
 }
 
-/** The stave step letter i sits on during `note` (a rest keeps the note before it). */
+/**
+ * The stave step letter i sits on during `note` (a rest keeps the note before it). Before the music
+ * starts every letter waits on the bottom line, so pressing Play sends them up into the melody.
+ */
 function pitch(i: number, n: number, note: Note, depth = 0): number {
+  if (note.bar * BAR + note.start < 0) return -STAFF_EDGE
   if (note.rest && depth < 8) return pitch(i, n, previous(i, note), depth + 1)
   return melodyNote(i, n, note.bar * BAR + note.start)
 }
 
-const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2)
+/** Cascade: letter i comes in up to a beat after the one before it, in sixteenths. */
+const cascadeOffset = (i: number) => (Math.round((stave.cascade / 100) * 4) / 4) * i
+
+/** The note letter i is on at a moment of its own rhythm (in beats). */
+function noteAt(i: number, beats: number): Note {
+  const bar = Math.floor(beats / BAR)
+  const into = beats - bar * BAR
+  const notes = barNotes(i, bar)
+  let note = notes[0]
+  for (const candidate of notes) if (candidate.start <= into) note = candidate
+  return note
+}
+
+/** With Warp's Stick, the most stave steps between neighbouring letters (null: no limit). */
+function stickGap(): number | null {
+  if (!stave.warp || stave.stick === 0) return null
+  const span = 2 * Math.max(1, Math.round(stave.range / 2))
+  return Math.max(1, Math.round(span * (1 - stave.stick / 100)))
+}
+
+/**
+ * The stave step letter i settles on for `note`. With Stick, it's kept within a few steps of the
+ * letters beside it as they are when the note starts: the word is reined in from each end in turn
+ * and the two are averaged, so neither end leads. Letters still only move on their own notes.
+ */
+function settle(i: number, n: number, note: Note, depth = 0): number {
+  const gap = stickGap()
+  if (gap === null) return pitch(i, n, note)
+  if (note.rest && depth < 8) return settle(i, n, previous(i, note), depth + 1)
+  const moment = note.bar * BAR + note.start + cascadeOffset(i)
+  const raw = Array.from({ length: n }, (_, j) => (j === i ? pitch(i, n, note) : pitch(j, n, noteAt(j, moment - cascadeOffset(j)))))
+  const near = (value: number, to: number) => Math.min(to + gap, Math.max(to - gap, value))
+  let fromStart = raw[0]
+  for (let j = 1; j <= i; j++) fromStart = near(raw[j], fromStart)
+  let fromEnd = raw[n - 1]
+  for (let j = n - 2; j >= i; j--) fromEnd = near(raw[j], fromEnd)
+  return Math.round((fromStart + fromEnd) / 2)
+}
+
 
 interface Motion {
   pos: number // stave steps (whole while holding)
@@ -150,10 +241,6 @@ interface Motion {
 }
 
 /** Overshooting ease for the snap back: 0 settles smoothly, higher values spring past and back. */
-const snapEase = (u: number, amount: number) => {
-  const c = amount * 2.2
-  return 1 + (c + 1) * (u - 1) ** 3 + c * (u - 1) ** 2
-}
 
 /**
  * Where letter i is in its rhythm at time t (seconds). A hop starts on its note's beat, takes
@@ -161,20 +248,14 @@ const snapEase = (u: number, amount: number) => {
  */
 function motion(i: number, n: number, t: number): Motion {
   const beatLength = 60 / stave.tempo
-  // Cascade: letter i comes in up to a beat after the one before it, in sixteenths
-  const offset = (Math.round((stave.cascade / 100) * 4) / 4) * i
-  const beats = t / beatLength - offset
-  const bar = Math.floor(beats / BAR)
-  const notes = barNotes(i, bar)
-  const into = beats - bar * BAR
-  let note = notes[0]
-  for (const candidate of notes) if (candidate.start <= into) note = candidate
+  const beats = t / beatLength - cascadeOffset(i)
+  const note = noteAt(i, beats)
   const since = (beats - (note.bar * BAR + note.start)) * beatLength // seconds into the note
   const length = note.length * beatLength
   const squash = stave.squash / 100
 
-  const to = pitch(i, n, note)
-  const from = pitch(i, n, previous(i, note))
+  const to = settle(i, n, note)
+  const from = settle(i, n, previous(i, note))
   const accentStrength = (stave.accent / 100) * (note.index === 0 ? 1 : note.start === 2 ? 0.5 : 0)
   const flight = Math.min(FLIGHT, length * 0.6)
 
@@ -278,13 +359,21 @@ export function drawStave(ctx: CanvasRenderingContext2D, engine: TypeEngine, wid
     return here
   })
 
+  const middleLetter = n > 1 ? Math.floor((n - 1) / 2) / (n - 1) : 0.5
   const range = engine.weightRange
   const heaviest = range ? range[1] : state.weight
 
   for (let i = 0; i < n; i++) {
     const g0 = glyphs[i]
     if (text[i] === ' ' || !g0.contours.length) continue
-    const m = motion(i, n, t)
+    let m = motion(i, n, t)
+    // while a loop is on the melody holds still and each letter snaps down onto the bottom line
+    if (stave.loop) {
+      const k = snapEase(Math.min(1, stave.loopTime / SETTLE), 0.4)
+      const [bottom, top] = m.span ?? [m.pos - 1, m.pos + 1]
+      const span: [number, number] = [bottom + (-STAFF_EDGE - 1 - bottom) * k, top + (-STAFF_EDGE + 1 - top) * k]
+      m = { pos: (span[0] + span[1]) / 2, squash: 1, angle: m.angle * (1 - k), accent: 0, span }
+    }
     const centre = middle - m.pos * step
     const w = g0.advance * unit
 
@@ -307,10 +396,17 @@ export function drawStave(ctx: CanvasRenderingContext2D, engine: TypeEngine, wid
     // about that centre, so it never leaves its note
     let baseline = centre + gap / 2
     let stretch = { sx: 1, sy: 1, w: 1 }
-    if (m.span) {
-      // warping: stretched (strokes keeping their thickness) between its bottom and top edges
-      baseline = middle - m.span[0] * step
-      stretch = { sx: 1, sy: Math.max(0.2, (m.span[1] - m.span[0]) / 2), w: 1 }
+    // Animate Height reaches the letter's top edge up from wherever it is, warping or not
+    const reach = stave.loop
+      ? loopStretch(stave.loop, n > 1 ? i / (n - 1) : 0.5, middleLetter, stave.loopPhase, 1 / loopRate(stave.loopSpeed)) *
+        (stave.loopHeight / 100) *
+        MAX_LOOP_STEPS
+      : 0
+    if (m.span || reach > 0) {
+      // stretched (strokes keeping their thickness) between its bottom and top edges
+      const [bottom, top] = m.span ?? [m.pos - 1, m.pos + 1]
+      baseline = middle - bottom * step
+      stretch = { sx: 1, sy: Math.max(0.2, (top + reach - bottom) / 2), w: 1 }
     }
     const cx = xs[i] + w / 2
     ctx.save()

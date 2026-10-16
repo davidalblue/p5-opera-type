@@ -4,15 +4,20 @@ interface FontChoice {
   name: string
   file: string // path inside public/fonts
   axes?: AxisValues // axis values pinned for this family
+  start?: AxisValues // where this family's sliders start (they stay adjustable)
 }
 
 // The first font that loads is the default. Files in public/fonts/local/ are git-ignored, so they're
 // only there when running on this computer (trial fonts can't be published) — elsewhere they're skipped.
 export const FONTS: FontChoice[] = [
+  // ABC Arizona superfamily: serif, width, weight and slant axes, starting light with a little serif
+  {
+    name: 'ABC Arizona',
+    file: 'local/ABCArizonaSuperfamilyVariableTrial.ttf',
+    start: { SRFF: 25, wdth: 100, wght: 200, slnt: 0 },
+  },
   // GT Ultra variable font, with its contrast axis starting at the Fine end
   { name: 'GT Ultra Fine', file: 'local/GT-Ultra-Trial-VF.ttf', axes: { CNTR: 100 } },
-  // ABC Arizona superfamily: serif, width, weight and slant axes
-  { name: 'ABC Arizona', file: 'local/ABCArizonaSuperfamilyVariableTrial.ttf' },
   // Bundled, SIL Open Font License
   { name: 'Source Serif Display', file: 'SourceSerif4Display-Semibold.otf' },
   { name: 'Playfair Display', file: 'PlayfairDisplay.ttf' },
@@ -23,7 +28,11 @@ export const FONTS: FontChoice[] = [
 ]
 
 const fontUrl = (file: string) => `${import.meta.env.BASE_URL}fonts/${file}`
-const loadChoice = (f: FontChoice) => TypeEngine.load(fontUrl(f.file), f.axes)
+const loadChoice = async (f: FontChoice) => {
+  const engine = await TypeEngine.load(fontUrl(f.file), f.axes)
+  engine.start = f.start ?? {}
+  return engine
+}
 const missing = new Set<string>()
 
 /** Loads the first font in FONTS that's available. */

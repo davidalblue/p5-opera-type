@@ -2,10 +2,11 @@ import p5 from 'p5'
 import './style.css'
 import type { TypeEngine } from './engine'
 import { layoutWord, type Laid, type Letter } from './layout'
+import { loopRate } from './loops'
 import { fillRandom, spliceText, state, target } from './state'
 import { initFontPicker, loadDefaultFont } from './fontPicker'
-import { buildFontAxes, initPanel, setPanelFont, syncPanel } from './ui'
-import { drawStave, stave } from './stave'
+import { animateLoopIcons, buildFontAxes, initPanel, setPanelFont, syncPanel } from './ui'
+import { advanceStave, drawStave, stave } from './stave'
 import { initStavePanel } from './staveUi'
 
 const MAX_LENGTH = 24
@@ -73,13 +74,17 @@ function start(initialKey: string, initial: TypeEngine) {
     if (e.key === 'Enter' || e.key === 'Escape') word.blur()
   })
 
-  // A newly picked font starts from its own axis defaults; the weight is kept where the font allows
+  // A newly picked font starts from its own starting values or axis defaults; otherwise the weight
+  // and slant are kept where the font allows
   const adoptFont = () => {
+    const { start } = engine
+    if (start.wght !== undefined) state.weight = start.wght
+    if (start.slnt !== undefined) state.slant = Math.abs(start.slnt)
     const range = engine.weightRange
     if (range) state.weight = Math.min(range[1], Math.max(range[0], state.weight))
     state.slant = Math.min(state.slant, engine.maxSlant)
     state.axes = {}
-    for (const a of engine.axisList) if (a.tag !== 'wght' && a.tag !== 'slnt') state.axes[a.tag] = a.default
+    for (const a of engine.axisList) if (a.tag !== 'wght' && a.tag !== 'slnt') state.axes[a.tag] = start[a.tag] ?? a.default
     engine.setAxes(state.axes)
   }
   adoptFont()
@@ -115,14 +120,16 @@ function start(initialKey: string, initial: TypeEngine) {
       stage.addEventListener('pointercancel', () => (drag = null))
     }
 
-    // the Stave tool's clock, which only runs while it's playing
-    let staveTime = 0
-
+    let iconPhase = 0
     p.draw = () => {
       if (state.tool === 'stave') {
-        if (stave.playing) staveTime += p.deltaTime / 1000
+        const seconds = p.deltaTime / 1000
+        advanceStave(seconds)
+        // the Animate Height buttons always preview their loops, playing or not
+        iconPhase += seconds * loopRate(stave.loopSpeed)
+        animateLoopIcons(iconPhase, 1 / loopRate(stave.loopSpeed))
         p.background(0)
-        drawStave(p.drawingContext as CanvasRenderingContext2D, engine, p.width, p.height, staveTime)
+        drawStave(p.drawingContext as CanvasRenderingContext2D, engine, p.width, p.height, stave.time)
         if (saveNextFrame) {
           saveNextFrame = false
           p.saveCanvas(state.text.trim() || 'type', 'png')

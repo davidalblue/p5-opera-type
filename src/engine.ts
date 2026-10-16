@@ -140,6 +140,8 @@ export class TypeEngine {
   private pairKerning: PairKerning | null = null
   // Values chosen for the font's other axes (serif, width, contrast…); weight and slant are passed per glyph
   private settings: AxisValues = {}
+  /** Where the sliders start when this font is picked (axes left out start at the font's defaults). */
+  start: AxisValues = {}
 
   /** `pinned` fixes axes this family doesn't expose, e.g. { CNTR: 100 } for GT Ultra Fine. */
   private constructor(font: Font, pinned: AxisValues) {

@@ -222,6 +222,10 @@ h2 {
   fill: var(--text);
 }
 
+.bars {
+  width: 70%;
+}
+
 /* Sliders */
 
 .sliders {

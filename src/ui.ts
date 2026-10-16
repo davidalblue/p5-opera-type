@@ -1,5 +1,6 @@
 import type { TypeEngine } from './engine'
 import { layoutWord, type Letter } from './layout'
+import { loopStretch, type LoopMode } from './loops'
 import {
   HEIGHT_CURVES,
   MAX_ITALIC,
@@ -53,6 +54,7 @@ export function initPanel(engine: TypeEngine, changed: () => void) {
     button(b, () => (state.baseline = b.dataset.baseline as Baseline))
   }
 
+  const percent = (): Range => [0, 100]
   const heightModes = $('#height-modes')
   for (const mode of HEIGHT_MODES) {
     const b = el('button', { class: 'tile', 'data-height': mode, 'aria-label': `Height curve: ${mode}` })
@@ -66,7 +68,6 @@ export function initPanel(engine: TypeEngine, changed: () => void) {
     italicModes.append(button(b, () => (state.italicMode = mode)))
   }
 
-  const percent = (): Range => [0, 100]
   const italic = (): Range => [0, MAX_ITALIC]
   $('#stroke-slider').append(slider('Stroke', stateBind('stroke'), percent))
   $('#height-sliders').append(
@@ -265,6 +266,35 @@ function curveSvg(mode: HeightMode) {
   line.setAttribute('points', pts.join(' '))
   svg.append(line)
   return svg
+}
+
+const BARS = 7
+
+/** An icon of little bars for a loop button, moved by `animateLoopIcons`. */
+export function barsSvg() {
+  const svg = document.createElementNS(SVG, 'svg')
+  svg.setAttribute('viewBox', '0 0 60 30')
+  svg.setAttribute('class', 'bars')
+  svg.setAttribute('aria-hidden', 'true')
+  for (let i = 0; i < BARS; i++) {
+    const bar = document.createElementNS(SVG, 'rect')
+    bar.setAttribute('x', String(3 + i * 8.5))
+    bar.setAttribute('width', '3')
+    svg.append(bar)
+  }
+  return svg
+}
+
+/** Plays each loop button's animation in its icon, `phase` loops in, each `cycle` seconds long. */
+export function animateLoopIcons(phase: number, cycle: number) {
+  for (const b of document.querySelectorAll<HTMLElement>('[data-loop]')) {
+    const mode = b.dataset.loop as LoopMode
+    b.querySelectorAll('rect').forEach((bar, i) => {
+      const h = Math.max(1, 4 + loopStretch(mode, i / (BARS - 1), 0.5, phase, cycle) * 22)
+      bar.setAttribute('y', (28 - h).toFixed(1))
+      bar.setAttribute('height', h.toFixed(1))
+    })
+  }
 }
 
 /** Renders letters with the same engine as the canvas, as an inline SVG. */

@@ -1,5 +1,6 @@
-import { newMelody, stave, type Melody } from './stave'
-import { addSync, button, slider, type Bind } from './ui'
+import type { LoopMode } from './loops'
+import { newMelody, resetStave, stave, toggleLoop, type Melody } from './stave'
+import { addSync, barsSvg, button, slider, type Bind } from './ui'
 
 const MELODIES: { mode: Melody; label: string }[] = [
   { mode: 'wave', label: 'Wave' },
@@ -8,9 +9,11 @@ const MELODIES: { mode: Melody; label: string }[] = [
   { mode: 'unison', label: 'Unison' },
 ]
 
+const LOOPS: LoopMode[] = ['wave', 'breathe', 'ripple', 'sweep']
+
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!
 
-type Key = 'range' | 'tempo' | 'rhythm' | 'cascade' | 'bounce' | 'squash' | 'flip' | 'accent' | 'size' | 'spacing' | 'reach' | 'hold' | 'snap'
+type Key = 'range' | 'tempo' | 'rhythm' | 'cascade' | 'bounce' | 'squash' | 'flip' | 'accent' | 'size' | 'spacing' | 'reach' | 'hold' | 'snap' | 'stick' | 'loopSpeed' | 'loopHeight'
 const bind = (key: Key): Bind => ({ get: () => stave[key], set: (v) => (stave[key] = v) })
 const between = (min: number, max: number) => () => [min, max] as [number, number]
 
@@ -43,14 +46,28 @@ export function initStavePanel() {
     slider('Reach', bind('reach'), whenWarping),
     slider('Hold', bind('hold'), whenWarping),
     slider('Snap', bind('snap'), whenWarping),
+    slider('Stick', bind('stick'), whenWarping),
   )
   button($('#warp-switch'), () => (stave.warp = !stave.warp))
+
+  // Animate Height: each button plays its loop (while playing) in place of the melody until it's pressed again
+  const loops = $('#loop-modes')
+  for (const mode of LOOPS) {
+    const b = document.createElement('button')
+    b.className = 'tile'
+    b.dataset.loop = mode
+    b.setAttribute('aria-label', `Animate height: ${mode}`)
+    b.append(barsSvg())
+    loops.append(button(b, () => toggleLoop(mode)))
+  }
+  $('#loop-sliders').append(slider('Speed', bind('loopSpeed'), percent), slider('Height', bind('loopHeight'), percent))
 
   $('#stave-layout').append(slider('Size', bind('size'), percent), slider('Spacing', bind('spacing'), percent))
 
   button($('#stave-lines'), () => (stave.lines = !stave.lines))
   button($('#stave-new'), newMelody)
   button($('#stave-play'), () => (stave.playing = !stave.playing))
+  button($('#stave-reset'), resetStave)
 
   addSync(() => {
     for (const b of document.querySelectorAll<HTMLElement>('[data-melody]')) {
@@ -60,6 +77,10 @@ export function initStavePanel() {
     lines.classList.toggle('is-active', stave.lines)
     lines.setAttribute('aria-pressed', String(stave.lines))
     $('#stave-play').textContent = stave.playing ? 'Pause' : 'Play'
+    for (const b of document.querySelectorAll<HTMLElement>('[data-loop]')) {
+      b.classList.toggle('is-active', b.dataset.loop === stave.loop)
+      b.setAttribute('aria-pressed', String(b.dataset.loop === stave.loop))
+    }
     const warp = $('#warp-switch')
     warp.classList.toggle('is-on', stave.warp)
     warp.setAttribute('aria-checked', String(stave.warp))
