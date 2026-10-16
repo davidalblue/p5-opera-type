@@ -1,5 +1,5 @@
 import type { AxisValues, Glyph, TypeEngine } from './engine'
-import { easeInOut, loopRate, loopStretch, snapEase, type LoopMode } from './loops'
+import { easeInOut, loopRate, loopSpan, snapEase, type LoopMode } from './loops'
 import { state } from './state'
 
 /**
@@ -36,7 +36,7 @@ export const stave = {
   // line in a loop, like Warp
   loop: null as LoopMode | null,
   loopSpeed: 50, // 0–100
-  loopHeight: 50, // 0–100: how far up the stave the letters stretch at the loop's peak
+  loopHeight: 50, // 0–100: how far up the stave the letters climb (50: the middle line, 100: the top line)
   loopTime: 0, // seconds since the loop was switched on (only while playing)
   loopPhase: 0, // how far the loop has run, in cycles
   lines: true,
@@ -99,7 +99,7 @@ const LAND = 0.14
 const REACH = 0.16
 const MAX_HOLD = 0.4
 const RELEASE = 0.16
-// Most a loop stretches a letter (Height at 100), in stave steps above its notehead: the whole stave
+// Highest a loop's top note goes (Height at 100), in stave steps above the bottom line: the top line
 const MAX_LOOP_STEPS = 8
 // Seconds the letters take to snap down onto the bottom line when a loop is switched on
 const SETTLE = 0.25
@@ -396,17 +396,18 @@ export function drawStave(ctx: CanvasRenderingContext2D, engine: TypeEngine, wid
     // about that centre, so it never leaves its note
     let baseline = centre + gap / 2
     let stretch = { sx: 1, sy: 1, w: 1 }
-    // Animate Height reaches the letter's top edge up from wherever it is, warping or not
-    const reach = stave.loop
-      ? loopStretch(stave.loop, n > 1 ? i / (n - 1) : 0.5, middleLetter, stave.loopPhase, 1 / loopRate(stave.loopSpeed)) *
-        (stave.loopHeight / 100) *
-        MAX_LOOP_STEPS
-      : 0
-    if (m.span || reach > 0) {
+    // Animate Height moves the letter's edges up towards its top note (a whole step, so it sits on a
+    // line or in a space up there) and back
+    const climb = Math.round((stave.loopHeight / 100) * MAX_LOOP_STEPS)
+    const [up0, up1] = stave.loop
+      ? loopSpan(stave.loop, n > 1 ? i / (n - 1) : 0.5, middleLetter, stave.loopPhase, 1 / loopRate(stave.loopSpeed))
+      : [0, 0]
+    if (m.span || up0 !== 0 || up1 !== 0) {
       // stretched (strokes keeping their thickness) between its bottom and top edges
       const [bottom, top] = m.span ?? [m.pos - 1, m.pos + 1]
-      baseline = middle - bottom * step
-      stretch = { sx: 1, sy: Math.max(0.2, (top + reach - bottom) / 2), w: 1 }
+      const edges = [bottom + up0 * climb, top + up1 * climb]
+      baseline = middle - edges[0] * step
+      stretch = { sx: 1, sy: Math.max(0.2, (edges[1] - edges[0]) / 2), w: 1 }
     }
     const cx = xs[i] + w / 2
     ctx.save()

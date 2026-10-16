@@ -1,6 +1,6 @@
 import type { TypeEngine } from './engine'
 import { layoutWord, type Letter } from './layout'
-import { loopStretch, type LoopMode } from './loops'
+import { loopSpan, type LoopMode } from './loops'
 import {
   HEIGHT_CURVES,
   MAX_ITALIC,
@@ -290,9 +290,11 @@ export function animateLoopIcons(phase: number, cycle: number) {
   for (const b of document.querySelectorAll<HTMLElement>('[data-loop]')) {
     const mode = b.dataset.loop as LoopMode
     b.querySelectorAll('rect').forEach((bar, i) => {
-      const h = Math.max(1, 4 + loopStretch(mode, i / (BARS - 1), 0.5, phase, cycle) * 22)
-      bar.setAttribute('y', (28 - h).toFixed(1))
-      bar.setAttribute('height', h.toFixed(1))
+      // a short bar that climbs to the top and back, like the letters
+      const [bottom, top] = loopSpan(mode, i / (BARS - 1), 0.5, phase, cycle)
+      const y = 24 - top * 20
+      bar.setAttribute('y', y.toFixed(1))
+      bar.setAttribute('height', Math.max(1, 28 - bottom * 20 - y).toFixed(1))
     })
   }
 }
