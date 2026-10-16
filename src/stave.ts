@@ -25,6 +25,11 @@ export const stave = {
   accent: 0, // 0–100: bold pop on the first beat of each bar (and lighter on the third)
   size: 50, // 0–100: size of the stave, and the noteheads with it
   spacing: 25, // 0–100: distance between letters, up to 1.5 noteheads
+  // warp: instead of hopping, a letter stretches from its old note to its new one, then snaps back
+  warp: false,
+  reach: 100, // 0–100: how far towards its new note the letter stretches before letting go
+  hold: 30, // 0–100: how long it stays stretched before snapping back
+  snap: 40, // 0–100: from a smooth settle to an elastic snap
   lines: true,
   playing: true,
   seed: 1,
@@ -45,6 +50,10 @@ const BAR = 4
 const CROUCH = 0.06
 const FLIGHT = 0.2
 const LAND = 0.14
+// Timing of a warp, in seconds: reaching out, the longest hold (Hold at 100), and snapping back
+const REACH = 0.16
+const MAX_HOLD = 0.4
+const RELEASE = 0.16
 // Most extra space between letters (Spacing at 100), as a share of the notehead height
 const MAX_TRACKING = 1.5
 
@@ -136,6 +145,14 @@ interface Motion {
   squash: number // 1 = none, above stretched tall, below squashed
   angle: number // radians of flip
   accent: number // 0–1, a freshly landed accented note
+  // while warping: the letter's bottom and top edges, in stave steps (a resting notehead spans pos ± 1)
+  span?: [number, number]
+}
+
+/** Overshooting ease for the snap back: 0 settles smoothly, higher values spring past and back. */
+const snapEase = (u: number, amount: number) => {
+  const c = amount * 2.2
+  return 1 + (c + 1) * (u - 1) ** 3 + c * (u - 1) ** 2
 }
 
 /**
@@ -161,8 +178,35 @@ function motion(i: number, n: number, t: number): Motion {
   const accentStrength = (stave.accent / 100) * (note.index === 0 ? 1 : note.start === 2 ? 0.5 : 0)
   const flight = Math.min(FLIGHT, length * 0.6)
 
+  // warping from the last note to this one: the leading edge reaches out, holds, then the
+  // trailing edge lets go and the letter snaps back to its normal height on the new note
+  if (stave.warp && !note.rest && from !== to) {
+    const hold = (stave.hold / 100) * MAX_HOLD
+    const fit = Math.min(1, (length * 0.85) / (REACH + hold + RELEASE))
+    const [reachT, holdT, releaseT] = [REACH * fit, hold * fit, RELEASE * fit]
+    if (since < reachT + holdT + releaseT) {
+      const up = to > from
+      const goal = from + (to - from) * (stave.reach / 100)
+      // in steps: [bottom, top] of the letter
+      const start: [number, number] = [from - 1, from + 1]
+      const reached: [number, number] = up ? [from - 1, goal + 1] : [goal - 1, from + 1]
+      const end: [number, number] = [to - 1, to + 1]
+      let span: [number, number]
+      if (since < reachT) {
+        const u = easeInOut(since / reachT)
+        span = [start[0] + (reached[0] - start[0]) * u, start[1] + (reached[1] - start[1]) * u]
+      } else if (since < reachT + holdT) {
+        span = reached
+      } else {
+        const u = snapEase((since - reachT - holdT) / releaseT, stave.snap / 100)
+        span = [reached[0] + (end[0] - reached[0]) * u, reached[1] + (end[1] - reached[1]) * u]
+      }
+      return { pos: (span[0] + span[1]) / 2, squash: 1, angle: 0, accent: 0, span }
+    }
+  }
+
   // flying from the last note to this one
-  if (!note.rest && since < flight) {
+  if (!stave.warp && !note.rest && since < flight) {
     const u = since / flight
     const lift = (stave.bounce / 100) * (1 + Math.abs(to - from) * 0.5)
     const pos = from + (to - from) * easeInOut(u) + lift * Math.sin(Math.PI * u)
@@ -177,7 +221,10 @@ function motion(i: number, n: number, t: number): Motion {
 
   // holding the note: a firm landing squash that settles quickly, and a quick crouch before the next hop
   let s = 1
-  const landed = note.rest ? Infinity : since - flight
+  const travel = stave.warp && from !== to
+    ? Math.min(length * 0.85, REACH + (stave.hold / 100) * MAX_HOLD + RELEASE)
+    : flight
+  const landed = note.rest ? Infinity : since - travel
   if (landed < LAND) {
     const v = landed / LAND
     s -= squash * 0.35 * (1 - v) * Math.cos(v * Math.PI * 1.5)
@@ -258,7 +305,13 @@ export function drawStave(ctx: CanvasRenderingContext2D, engine: TypeEngine, wid
 
     // the notehead: cap height centred on its line or space; squash, flips and accents all happen
     // about that centre, so it never leaves its note
-    const baseline = centre + gap / 2
+    let baseline = centre + gap / 2
+    let stretch = { sx: 1, sy: 1, w: 1 }
+    if (m.span) {
+      // warping: stretched (strokes keeping their thickness) between its bottom and top edges
+      baseline = middle - m.span[0] * step
+      stretch = { sx: 1, sy: Math.max(0.2, (m.span[1] - m.span[0]) / 2), w: 1 }
+    }
     const cx = xs[i] + w / 2
     ctx.save()
     ctx.translate(cx, centre)
@@ -268,7 +321,7 @@ export function drawStave(ctx: CanvasRenderingContext2D, engine: TypeEngine, wid
     ctx.fillStyle = '#fff'
     // the heavier glyph is wider: keep it centred on the same spot
     const shift = ((g0.advance - g.advance) * unit) / 2
-    const d = engine.path(g, { sx: 1, sy: 1, w: 1 }, {
+    const d = engine.path(g, stretch, {
       x: xs[i] + shift,
       baseline,
       scale: unit,

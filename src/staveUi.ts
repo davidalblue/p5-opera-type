@@ -10,7 +10,7 @@ const MELODIES: { mode: Melody; label: string }[] = [
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!
 
-type Key = 'range' | 'tempo' | 'rhythm' | 'cascade' | 'bounce' | 'squash' | 'flip' | 'accent' | 'size' | 'spacing'
+type Key = 'range' | 'tempo' | 'rhythm' | 'cascade' | 'bounce' | 'squash' | 'flip' | 'accent' | 'size' | 'spacing' | 'reach' | 'hold' | 'snap'
 const bind = (key: Key): Bind => ({ get: () => stave[key], set: (v) => (stave[key] = v) })
 const between = (min: number, max: number) => () => [min, max] as [number, number]
 
@@ -37,6 +37,15 @@ export function initStavePanel() {
     slider('Flip', bind('flip'), percent),
     slider('Accent', bind('accent'), percent),
   )
+  // Warp's sliders are greyed out while it's switched off
+  const whenWarping = () => (stave.warp ? ([0, 100] as [number, number]) : null)
+  $('#stave-warp').append(
+    slider('Reach', bind('reach'), whenWarping),
+    slider('Hold', bind('hold'), whenWarping),
+    slider('Snap', bind('snap'), whenWarping),
+  )
+  button($('#warp-switch'), () => (stave.warp = !stave.warp))
+
   $('#stave-layout').append(slider('Size', bind('size'), percent), slider('Spacing', bind('spacing'), percent))
 
   button($('#stave-lines'), () => (stave.lines = !stave.lines))
@@ -51,5 +60,8 @@ export function initStavePanel() {
     lines.classList.toggle('is-active', stave.lines)
     lines.setAttribute('aria-pressed', String(stave.lines))
     $('#stave-play').textContent = stave.playing ? 'Pause' : 'Play'
+    const warp = $('#warp-switch')
+    warp.classList.toggle('is-on', stave.warp)
+    warp.setAttribute('aria-checked', String(stave.warp))
   })
 }
