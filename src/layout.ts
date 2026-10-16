@@ -60,7 +60,8 @@ export function stretchFor(height: number, maxStretch: number, growth = 0, desig
  * hang from or sit on, and a full-height letter spans the whole box. The word is centred
  * and shrunk to fit if it is too wide. `weight` only affects fonts with a weight axis; `growth` is
  * how much strokes thicken as letters grow (see stretchFor); `slant` (degrees) leans every letter
- * on top of its own italic.
+ * on top of its own italic. With `boldStretch`, a letter's weight rises with its height, from
+ * `weight` at rest to the font's boldest at full height.
  *
  * Spacing is balanced optically: the open space between each pair of neighbours, averaged over
  * their height (with voids deeper than DEPTH beyond the closest point capped), is kept equal to that
@@ -76,6 +77,7 @@ export function layoutWord(
   weight = 400,
   growth = 0,
   slant = 0,
+  boldStretch = false,
 ): Laid {
   const C = engine.capHeight
   const unit = box.h / maxStretch / C
@@ -94,7 +96,9 @@ export function layoutWord(
     // Stems should end up w times as thick as the font's: draw the letter from the weight that
     // gets them there after it's widened sx times — lighter when widened geometrically, heavier
     // when strokes should grow but the font's own narrower width is used (weight axis only)
-    const drawn = engine.weightFor(weight, stretch.w / stretch.sx)
+    const range = engine.weightRange
+    const own = boldStretch && range ? weight + (range[1] - weight) * l.height : weight
+    const drawn = engine.weightFor(own, stretch.w / stretch.sx)
     // the font's own slant axis covers what it can; the rest is a geometric shear
     const italic = l.italic + slant
     const g = engine.glyph(l.ch, drawn, Math.min(italic, engine.maxSlant), width === null ? {} : { wdth: width })

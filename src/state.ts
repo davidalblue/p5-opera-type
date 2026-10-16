@@ -43,6 +43,8 @@ export interface State {
   // degrees, applied to every letter on top of Modulate Italic, and its other axes (serif, width…)
   slant: number
   axes: Record<string, number>
+  // Letters get bolder as they stretch, from the resting weight to the font's boldest (weight axis only)
+  autoWeight: boolean
   random: { height: number[]; italic: number[] }
   // Where each letter has been dragged to, relative to its place in the word (in box heights)
   offsets: { x: number; y: number }[]
@@ -57,6 +59,7 @@ export const state: State = {
   weight: 400,
   stroke: 100,
   slant: 0,
+  autoWeight: false,
   axes: {},
   random: { height: [], italic: [] },
   offsets: [],

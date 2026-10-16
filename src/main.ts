@@ -128,7 +128,7 @@ function start(initialKey: string, initial: TypeEngine) {
       const ctx = p.drawingContext as CanvasRenderingContext2D
       ctx.fillStyle = '#fff'
       const box = { x: p.width * 0.06, y: p.height * 0.22, w: p.width * 0.88, h: p.height * 0.51 }
-      laid = layoutWord(engine, letters, box, MAX_STRETCH, state.weight, state.stroke / 100, state.slant)
+      laid = layoutWord(engine, letters, box, MAX_STRETCH, state.weight, state.stroke / 100, state.slant, state.autoWeight)
       shapes = laid.paths.map((d) => new Path2D(d))
       // the letter being dragged is drawn on top
       const order = shapes.map((_, i) => i)

@@ -261,6 +261,15 @@ h2 {
   user-select: none;
 }
 
+.toggle {
+  width: 100%;
+  margin-top: 16px;
+}
+
+.toggle[hidden] {
+  display: none;
+}
+
 .note {
   margin: 14px 0 0;
   color: var(--muted);

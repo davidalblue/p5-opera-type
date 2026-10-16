@@ -73,6 +73,7 @@ export function initPanel(engine: TypeEngine, changed: () => void) {
   )
   buildFontAxes(engine)
 
+  button($('#auto-weight'), () => (state.autoWeight = !state.autoWeight))
   button($('#randomize-all'), randomizeEverything)
   button($('#randomize-height'), randomizeHeight)
   button($('#reset'), reset)
@@ -94,7 +95,10 @@ export function buildFontAxes(engine: TypeEngine) {
   for (const a of axes) {
     const label = AXIS_LABELS[a.tag] ?? a.name
     if (a.tag === 'wght') {
-      box.append(slider(label, { get: () => state.weight, set: (v) => (state.weight = v) }, () => [a.min, a.max]))
+      // with "Bolder when stretched" on, each letter's weight follows its height instead
+      const row = slider(label, { get: () => state.weight, set: (v) => (state.weight = v) }, () => (state.autoWeight ? null : [a.min, a.max]), 'Auto')
+      row.title = 'Set by the stretch while "Bolder when stretched" is on'
+      box.append(row)
     } else if (a.tag === 'slnt') {
       // shown as degrees of right lean, whichever sign the font uses
       box.append(slider(label, { get: () => state.slant, set: (v) => (state.slant = v) }, () => [0, engine.maxSlant]))
@@ -111,6 +115,7 @@ export function buildFontAxes(engine: TypeEngine) {
     }
   }
   $('#axes-note').hidden = axes.length > 0
+  $('#auto-weight').hidden = !engine.weightRange
   syncPanel()
 }
 
@@ -131,6 +136,8 @@ export function syncPanel() {
   active('[data-baseline]', (b) => b.dataset.baseline === state.baseline)
   active('[data-height]', (b) => b.dataset.height === state.heightMode)
   active('[data-italic]', (b) => b.dataset.italic === state.italicMode)
+  active('#auto-weight', () => state.autoWeight)
+  $('#auto-weight').setAttribute('aria-pressed', String(state.autoWeight))
   for (const s of document.querySelectorAll<HTMLElement>('.slider')) (s as SliderEl).sync()
 }
 
