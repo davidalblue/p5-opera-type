@@ -193,6 +193,12 @@ h2 {
   background-color: var(--tile-hover);
 }
 
+.tile:disabled {
+  cursor: default;
+  opacity: 0.4;
+  pointer-events: none;
+}
+
 .select:disabled {
   cursor: progress;
   opacity: 0.6;

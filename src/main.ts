@@ -6,7 +6,7 @@ import { loopRate } from './loops'
 import { fillRandom, spliceText, state, target } from './state'
 import { initFontPicker, loadDefaultFont } from './fontPicker'
 import { animateLoopIcons, buildFontAxes, initPanel, setPanelFont, syncPanel } from './ui'
-import { advanceStave, drawStave, stave } from './stave'
+import { advanceStave, drawStave, isShaping, shapeTarget, shapeTo, stave, startShaping, stopShaping } from './stave'
 import { initStavePanel } from './staveUi'
 
 const MAX_LENGTH = 24
@@ -117,7 +117,10 @@ function start(initialKey: string, initial: TypeEngine) {
       stage.addEventListener('pointerdown', onPointerDown)
       stage.addEventListener('pointermove', onPointerMove)
       stage.addEventListener('pointerup', onPointerUp)
-      stage.addEventListener('pointercancel', () => (drag = null))
+      stage.addEventListener('pointercancel', () => {
+        drag = null
+        stopShaping()
+      })
     }
 
     let iconPhase = 0
@@ -217,9 +220,18 @@ function start(initialKey: string, initial: TypeEngine) {
   // Pressing a letter and moving drags it; pressing without moving places the caret there.
   // Pressing empty canvas stops editing.
   function onPointerDown(e: PointerEvent) {
+    if (e.target === word) return
+    // on the Stave, paused with Warp on, letters can be stretched and moved along the stave
+    if (state.tool === 'stave') {
+      const { x, y } = local(e)
+      if (!startShaping(x, y)) return
+      e.preventDefault()
+      stage.setPointerCapture(e.pointerId)
+      if (isShaping()) stage.style.cursor = shapeCursor(x, y, true)
+      return
+    }
     // editing and dragging on the canvas belong to the Stretch tool
     if (state.tool !== 'stretch') return
-    if (e.target === word) return
     word.blur()
     const { x, y } = local(e)
     const index = hit(x, y)
@@ -233,6 +245,12 @@ function start(initialKey: string, initial: TypeEngine) {
   }
 
   function onPointerMove(e: PointerEvent) {
+    if (state.tool === 'stave') {
+      const { x, y } = local(e)
+      if (isShaping()) shapeTo(y)
+      else stage.style.cursor = shapeCursor(x, y, false)
+      return
+    }
     if (state.tool !== 'stretch') {
       stage.style.cursor = ''
       return
@@ -253,6 +271,12 @@ function start(initialKey: string, initial: TypeEngine) {
   }
 
   function onPointerUp(e: PointerEvent) {
+    if (state.tool === 'stave') {
+      stopShaping()
+      const { x, y } = local(e)
+      stage.style.cursor = shapeCursor(x, y, false)
+      return
+    }
     if (!drag) return
     if (!drag.moved) {
       editing = true
@@ -261,6 +285,14 @@ function start(initialKey: string, initial: TypeEngine) {
     }
     drag = null
     stage.style.cursor = 'grab'
+  }
+
+  /** Cursor over a Stave letter that can be shaped: resizing at its edges, a hand in the middle. */
+  const shapeCursor = (x: number, y: number, holding: boolean) => {
+    const target = shapeTarget(x, y)
+    if (!target) return ''
+    if (target.grip !== 'middle') return 'ns-resize'
+    return holding ? 'grabbing' : 'grab'
   }
 
   const local = (e: PointerEvent) => {

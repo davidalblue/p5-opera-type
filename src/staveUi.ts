@@ -1,5 +1,6 @@
 import type { LoopMode } from './loops'
-import { newMelody, resetStave, stave, toggleLoop, type Melody } from './stave'
+import { canShape, newMelody, resetStave, stave, staveSvg, toggleLoop, togglePlay, type Melody } from './stave'
+import { state } from './state'
 import { addSync, barsSvg, button, slider, type Bind } from './ui'
 
 const MELODIES: { mode: Melody; label: string }[] = [
@@ -66,8 +67,17 @@ export function initStavePanel() {
 
   button($('#stave-lines'), () => (stave.lines = !stave.lines))
   button($('#stave-new'), newMelody)
-  button($('#stave-play'), () => (stave.playing = !stave.playing))
+  button($('#stave-play'), togglePlay)
   button($('#stave-reset'), resetStave)
+  // while paused, the letters (and stave lines, if shown) as they stand, as vectors
+  button($('#stave-svg'), () => {
+    if (stave.playing) return
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(new Blob([staveSvg()], { type: 'image/svg+xml' }))
+    link.download = `${state.text.trim() || 'type'}.svg`
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000)
+  })
 
   addSync(() => {
     for (const b of document.querySelectorAll<HTMLElement>('[data-melody]')) {
@@ -77,6 +87,8 @@ export function initStavePanel() {
     lines.classList.toggle('is-active', stave.lines)
     lines.setAttribute('aria-pressed', String(stave.lines))
     $('#stave-play').textContent = stave.playing ? 'Pause' : 'Play'
+    $('#shape-note').hidden = !canShape()
+    $<HTMLButtonElement>('#stave-svg').disabled = stave.playing
     for (const b of document.querySelectorAll<HTMLElement>('[data-loop]')) {
       b.classList.toggle('is-active', b.dataset.loop === stave.loop)
       b.setAttribute('aria-pressed', String(b.dataset.loop === stave.loop))

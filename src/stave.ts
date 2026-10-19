@@ -45,13 +45,35 @@ export const stave = {
   seed: 1,
 }
 
+/** A letter's bottom and top edges, in stave steps (a resting notehead spans its note ± 1). */
+type Span = [number, number]
+
+// Letters shaped by hand while paused, until Play or Reset
+let shaped: Record<number, Span> = {}
+// Shapes let go when Play is pressed, snapping back into the music
+let letGo: { spans: Record<number, Span>; time: number } | null = null
+
 /** Back to the start: every letter waits on the bottom line until Play is pressed again. */
 export function resetStave() {
   stave.time = 0
   stave.loopTime = 0
   stave.loopPhase = 0
   stave.playing = false
+  shaped = {}
+  letGo = null
 }
+
+/** Play or pause. Letters shaped by hand snap back into the music when it plays. */
+export function togglePlay() {
+  stave.playing = !stave.playing
+  if (stave.playing && Object.keys(shaped).length) {
+    letGo = { spans: shaped, time: 0 }
+    shaped = {}
+  }
+}
+
+/** Letters can be shaped by hand while paused, with Warp on and no Animate Height loop. */
+export const canShape = () => !stave.playing && stave.warp && !stave.loop
 
 /**
  * Switches an Animate Height loop on (from its start) or, pressed again, off. Off, the melody starts
@@ -71,6 +93,7 @@ export function toggleLoop(mode: LoopMode) {
 /** Moves the Stave on by `seconds` of play: the melody, or while a loop is on, only the loop. */
 export function advanceStave(seconds: number) {
   if (!stave.playing) return
+  if (letGo && (letGo.time += seconds) > SETTLE) letGo = null
   if (!stave.loop) {
     stave.time += seconds
     return
@@ -343,9 +366,16 @@ export function drawStave(ctx: CanvasRenderingContext2D, engine: TypeEngine, wid
   const faint = 'rgb(255 255 255 / 0.4)'
   const line = Math.max(1, gap * 0.04)
 
+  picture = { width, height, rules: [], letters: [] }
+  // a stave or ledger line, kept for saving as SVG too
+  const rule = (x: number, y: number, w: number, h: number) => {
+    ctx.fillRect(x, y, w, h)
+    picture.rules.push([x, y, w, h])
+  }
+
   if (stave.lines) {
     ctx.fillStyle = faint
-    for (let k = -STAFF_EDGE; k <= STAFF_EDGE; k += 2) ctx.fillRect(width * 0.04, middle - k * step - line / 2, width * 0.92, line)
+    for (let k = -STAFF_EDGE; k <= STAFF_EDGE; k += 2) rule(width * 0.04, middle - k * step - line / 2, width * 0.92, line)
   }
   if (!n) return
 
@@ -359,6 +389,7 @@ export function drawStave(ctx: CanvasRenderingContext2D, engine: TypeEngine, wid
     return here
   })
 
+  drawn = { middle, step, limit: Math.max(STAFF_EDGE + 1, Math.floor(height / 2 / step) - 1), letters: [] }
   const middleLetter = n > 1 ? Math.floor((n - 1) / 2) / (n - 1) : 0.5
   const range = engine.weightRange
   const heaviest = range ? range[1] : state.weight
@@ -367,6 +398,16 @@ export function drawStave(ctx: CanvasRenderingContext2D, engine: TypeEngine, wid
     const g0 = glyphs[i]
     if (text[i] === ' ' || !g0.contours.length) continue
     let m = motion(i, n, t)
+    // shaped by hand while paused, or snapping from that shape back into the music after Play
+    const own = shaped[i]
+    const was = letGo?.spans[i]
+    if (own) m = { pos: (own[0] + own[1]) / 2, squash: 1, angle: 0, accent: 0, span: own }
+    else if (was && letGo) {
+      const k = snapEase(Math.min(1, letGo.time / SETTLE), 0.4)
+      const [bottom, top] = m.span ?? [m.pos - 1, m.pos + 1]
+      const span: Span = [was[0] + (bottom - was[0]) * k, was[1] + (top - was[1]) * k]
+      m = { ...m, pos: (span[0] + span[1]) / 2, span }
+    }
     // while a loop is on the melody holds still and each letter snaps down onto the bottom line
     if (stave.loop) {
       const k = snapEase(Math.min(1, stave.loopTime / SETTLE), 0.4)
@@ -383,7 +424,7 @@ export function drawStave(ctx: CanvasRenderingContext2D, engine: TypeEngine, wid
       ctx.fillStyle = faint
       const dir = Math.sign(resting)
       for (let k = STAFF_EDGE + 2; k <= Math.abs(resting); k += 2) {
-        ctx.fillRect(xs[i] - w * 0.2, middle - dir * k * step - line / 2, w * 1.4, line)
+        rule(xs[i] - w * 0.2, middle - dir * k * step - line / 2, w * 1.4, line)
       }
     }
 
@@ -402,13 +443,14 @@ export function drawStave(ctx: CanvasRenderingContext2D, engine: TypeEngine, wid
     const [up0, up1] = stave.loop
       ? loopSpan(stave.loop, n > 1 ? i / (n - 1) : 0.5, middleLetter, stave.loopPhase, 1 / loopRate(stave.loopSpeed))
       : [0, 0]
+    const [bottom, top] = m.span ?? [m.pos - 1, m.pos + 1]
+    const edges: Span = [bottom + up0 * climb, top + up1 * climb]
     if (m.span || up0 !== 0 || up1 !== 0) {
       // stretched (strokes keeping their thickness) between its bottom and top edges
-      const [bottom, top] = m.span ?? [m.pos - 1, m.pos + 1]
-      const edges = [bottom + up0 * climb, top + up1 * climb]
       baseline = middle - edges[0] * step
       stretch = { sx: 1, sy: Math.max(0.2, (edges[1] - edges[0]) / 2), w: 1 }
     }
+    drawn.letters[i] = { x: xs[i], w, span: edges }
     const cx = xs[i] + w / 2
     ctx.save()
     ctx.translate(cx, centre)
@@ -428,5 +470,107 @@ export function drawStave(ctx: CanvasRenderingContext2D, engine: TypeEngine, wid
     })
     ctx.fill(new Path2D(d))
     ctx.restore()
+    const sx = grow / Math.sqrt(m.squash)
+    const sy = grow * m.squash
+    const turned = m.angle !== 0 || sx !== 1 || sy !== 1
+    picture.letters.push({
+      d,
+      transform: turned
+        ? `translate(${cx} ${centre}) rotate(${(m.angle * 180) / Math.PI}) scale(${sx} ${sy}) translate(${-cx} ${-centre})`
+        : undefined,
+    })
   }
+}
+
+// Where each letter was last drawn, for shaping by hand: canvas px for the stave's middle line and
+// one step, the furthest step the canvas shows, and each letter's left edge, width and edges in steps
+let drawn: { middle: number; step: number; limit: number; letters: ({ x: number; w: number; span: Span } | undefined)[] } = {
+  middle: 0,
+  step: 1,
+  limit: 0,
+  letters: [],
+}
+
+export type Grip = 'top' | 'bottom' | 'middle'
+
+/** The letter under canvas point (x, y), and whether it's held by its top, bottom or middle. */
+export function shapeTarget(x: number, y: number): { index: number; grip: Grip } | null {
+  if (!canShape()) return null
+  const { middle, step } = drawn
+  for (let i = drawn.letters.length - 1; i >= 0; i--) {
+    const l = drawn.letters[i]
+    if (!l) continue
+    const top = middle - l.span[1] * step
+    const bottom = middle - l.span[0] * step
+    const pad = step * 0.4
+    if (x < l.x - pad || x > l.x + l.w + pad || y < top - pad || y > bottom + pad) continue
+    // the edges are a band about a third of a notehead deep (less on a squashed letter)
+    const band = Math.min((bottom - top) * 0.3, step * 0.9)
+    return { index: i, grip: y < top + band ? 'top' : y > bottom - band ? 'bottom' : 'middle' }
+  }
+  return null
+}
+
+let grab: { index: number; grip: Grip; from: Span; y: number } | null = null
+
+/** Takes hold of the letter at (x, y), if there's one to shape; returns whether it did. */
+export function startShaping(x: number, y: number) {
+  const target = shapeTarget(x, y)
+  const l = target && drawn.letters[target.index]
+  if (!target || !l) return false
+  grab = { ...target, from: [Math.round(l.span[0]), Math.round(l.span[1])], y }
+  return true
+}
+
+/**
+ * Follows the pointer to canvas height y: a held top or bottom edge goes to the line or space
+ * there (at least a step from the other edge); a letter held by the middle moves whole.
+ */
+export function shapeTo(y: number) {
+  if (!grab) return
+  const moved = (grab.y - y) / drawn.step
+  const limit = drawn.limit
+  let [bottom, top] = grab.from
+  const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
+  if (grab.grip === 'top') top = clamp(Math.round(top + moved), bottom + 1, limit)
+  else if (grab.grip === 'bottom') bottom = clamp(Math.round(bottom + moved), -limit, top - 1)
+  else {
+    const by = clamp(Math.round(moved), -limit - bottom, limit - top)
+    bottom += by
+    top += by
+  }
+  shaped[grab.index] = [bottom, top]
+}
+
+export function stopShaping() {
+  grab = null
+}
+
+export const isShaping = () => grab !== null
+
+// What was last drawn, in canvas px, for saving as SVG: the stave and ledger lines (x, y, width,
+// height) and each letter's outline with the squash, flip or accent it was drawn with
+let picture: { width: number; height: number; rules: number[][]; letters: { d: string; transform?: string }[] } = {
+  width: 0,
+  height: 0,
+  rules: [],
+  letters: [],
+}
+
+/** The Stave as it's showing, as an SVG file: background, stave lines and letters in their own groups. */
+export function staveSvg() {
+  const { width, height, rules, letters } = picture
+  const num = (v: number) => String(Math.round(v * 100) / 100)
+  const lines = rules.map(([x, y, w, h]) => `    <rect x="${num(x)}" y="${num(y)}" width="${num(w)}" height="${num(h)}"/>`)
+  const shapes = letters.map(({ d, transform }) => `    <path d="${d}"${transform ? ` transform="${transform}"` : ''}/>`)
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
+    `  <rect id="background" width="${width}" height="${height}" fill="#000"/>`,
+    ...(lines.length ? ['  <g id="stave" fill="#fff" fill-opacity="0.4">', ...lines, '  </g>'] : []),
+    '  <g id="letters" fill="#fff">',
+    ...shapes,
+    '  </g>',
+    '</svg>',
+    '',
+  ].join('\n')
 }
